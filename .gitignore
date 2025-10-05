@@ -1,0 +1,45 @@
+# Gradle build outputs
+build/
+.gradle/
+bin/
+
+# IDE files
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Database files
+*.lck
+*.log
+*.properties
+*.script
+alchemydb.*
+
+# Uploaded files (but keep the directory structure)
+*/uploads/*
+!*/uploads/.gitkeep
+
+# Application logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Node modules (for frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+.env.production

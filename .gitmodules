@@ -1,0 +1,6 @@
+[submodule "alchemyServer"]
+	path = alchemyServer
+	url = git@github.com:ablepacifist/alchemyServer.git
+[submodule "lexiconServer"]
+	path = lexiconServer
+	url = git@github.com:ablepacifist/lexiconServer.git
