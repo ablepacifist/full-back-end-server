@@ -1,0 +1,4 @@
+[submodule "Lexicon"]
+	path = Lexicon
+	url = https://github.com/ablepacifist/Lexicon.git
+	branch = dev
