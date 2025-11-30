@@ -2,93 +2,139 @@
 
 ## Prerequisites
 - playit.gg account and client installed
-- Java 17+ installed
+- Java 21+ installed
 - Node.js 18+ installed
 - HSQLDB running
+
+## ⚠️ CRITICAL: Use IP Addresses, NOT Hostnames!
+
+Remote users cannot resolve PlayIt.gg hostnames due to DNS issues. You MUST use IP addresses in all configurations.
+
+### Get Your Tunnel IP Addresses
+
+For each tunnel, find the actual IP:
+```bash
+nslookup gets-nintendo.gl.at.ply.gg
+nslookup award-kirk.gl.at.ply.gg
+nslookup lexicon.playit.pub
+```
+
+Example output:
+```
+Server:		127.0.0.53
+Address:	127.0.0.53#53
+
+Non-authoritative answer:
+Name:	gets-nintendo.gl.at.ply.gg
+Address: 147.185.221.224    ← Use this IP!
+```
 
 ## Step 1: Set up playit.gg Tunnels
 
 You'll need **3 tunnels**:
 
-1. **Frontend Tunnel** (port 3000)
+1. **Frontend Tunnel** (local port 3001)
    ```bash
-   playit tunnel tcp 3000
+   playit tunnel tcp 3001
    ```
-   Note the URL (e.g., `https://your-frontend.playit.gg`)
+   Note the hostname AND resolve to IP: `nslookup lexicon.playit.pub`
 
-2. **Alchemy Server Tunnel** (port 8080)
+2. **Alchemy Server Tunnel** (local port 8080)
    ```bash
    playit tunnel tcp 8080
    ```
-   Note the URL (e.g., `https://your-alchemy.playit.gg`)
+   Note the hostname AND resolve to IP: `nslookup gets-nintendo.gl.at.ply.gg`
 
-3. **Lexicon Server Tunnel** (port 36568)
+3. **Lexicon Server Tunnel** (local port 36568)
    ```bash
    playit tunnel tcp 36568
    ```
-   Note the URL (e.g., `https://your-lexicon.playit.gg`)
+   Note the hostname AND resolve to IP: `nslookup award-kirk.gl.at.ply.gg`
 
 ## Step 2: Configure Environment Variables
 
 ### Frontend (Lexicon React App)
 
-Create `.env.production.local` in the `Lexicon/` directory:
+Create `Lexicon/.env.production` (NOT .env.production.local):
 
-```bash
-# Backend API URLs (use your playit.gg tunnel URLs)
-REACT_APP_API_URL=https://your-alchemy.playit.gg
-REACT_APP_LEXICON_API_URL=https://your-lexicon.playit.gg
+```properties
+# Backend API URLs (MUST use IP addresses!)
+REACT_APP_API_URL=http://147.185.221.224:9675
+REACT_APP_LEXICON_API_URL=http://147.185.221.224:9686
 
-# Frontend URL
-REACT_APP_FRONTEND_URL=https://your-frontend.playit.gg
+# Frontend URL (use IP)
+REACT_APP_FRONTEND_URL=http://147.185.221.211:58938
 
 # Environment
 REACT_APP_ENV=production
-PORT=3000
 ```
 
-### Backend - lexiconServer
+**Replace the IPs above with YOUR tunnel IPs from nslookup!**
 
-Create environment file or set these before running:
-
-```bash
-export LEXICON_PORT=36568
-export SERVER_ADDRESS=0.0.0.0
-export CORS_ALLOWED_ORIGINS=https://your-frontend.playit.gg
-export DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
-export UPLOAD_DIR=./uploads
-export MAX_FILE_SIZE=100MB
-export MAX_REQUEST_SIZE=100MB
-```
-
-Or create `lexiconServer/src/main/resources/application-production.properties`:
+### Backend - lexiconServer/.env
 
 ```properties
-server.port=36568
-server.address=0.0.0.0
-cors.allowed.origins=https://your-frontend.playit.gg
-database.url=jdbc:hsqldb:hsql://localhost:9002/mydb
-lexicon.file.upload-dir=./uploads
-spring.servlet.multipart.max-file-size=100MB
-spring.servlet.multipart.max-request-size=100MB
+# Server Configuration
+LEXICON_PORT=36568
+SERVER_ADDRESS=0.0.0.0
+
+# CORS Configuration (MUST use IPs!)
+CORS_ALLOWED_ORIGINS=http://147.185.221.211:58938,http://lexicon.playit.pub:58938,http://localhost:3001
+
+# File Upload Configuration - 10GB limit with BLOB storage
+MAX_FILE_SIZE=10GB
+MAX_REQUEST_SIZE=10GB
+UPLOAD_DIR=./uploads
+
+# Timeout for large files (30 minutes)
+server.tomcat.connection-timeout=1800000
+spring.mvc.async.request-timeout=1800000
+
+# Database
+DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
+
+# yt-dlp (optional)
+YTDLP_COOKIES_PATH=./cookies.txt
 ```
 
-### Backend - alchemyServer
-
-```bash
-export ALCHEMY_PORT=8080
-export SERVER_ADDRESS=0.0.0.0
-export CORS_ALLOWED_ORIGINS=https://your-frontend.playit.gg
-export DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
-```
-
-Or create `alchemyServer/src/main/resources/application-production.properties`:
+### Backend - alchemyServer/.env
 
 ```properties
-server.port=8080
-server.address=0.0.0.0
-cors.allowed-origins=https://your-frontend.playit.gg
-database.url=jdbc:hsqldb:hsql://localhost:9002/mydb
+# Server Configuration
+ALCHEMY_PORT=8080
+SERVER_ADDRESS=0.0.0.0
+
+# CORS Configuration (use IPs!)
+CORS_ALLOWED_ORIGINS=http://147.185.221.211:58938,http://lexicon.playit.pub:58938,http://localhost:3001
+
+# Database
+DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
+```
+
+### Create Start Scripts
+
+Both servers MUST load .env files before starting!
+
+**lexiconServer/start.sh**:
+```bash
+#!/bin/bash
+set -a
+source .env
+set +a
+./gradlew bootRun
+```
+
+**alchemyServer/start.sh**:
+```bash
+#!/bin/bash
+set -a
+source .env
+set +a
+./gradlew bootRun
+```
+
+```bash
+chmod +x lexiconServer/start.sh alchemyServer/start.sh
 ```
 
 ## Step 3: Build for Production
@@ -96,94 +142,153 @@ database.url=jdbc:hsqldb:hsql://localhost:9002/mydb
 ### Frontend
 ```bash
 cd Lexicon
+npm install
 npm run build
 ```
 
-This creates an optimized production build in `Lexicon/build/`
+This creates an optimized production build in `Lexicon/build/` using the IP addresses from `.env.production`
 
 ### Backend - lexiconServer
 ```bash
 cd lexiconServer
-./gradlew bootJar
+./gradlew build
 ```
-
-Creates JAR at: `lexiconServer/build/libs/lexiconServer-1.0.0.jar`
 
 ### Backend - alchemyServer
 ```bash
 cd alchemyServer
-./gradlew bootJar
+./gradlew build
 ```
 
-Creates JAR at: `alchemyServer/build/libs/alchemyServer-1.0.jar`
-
-## Step 4: Start Database
+## Step 4: Database Setup
 
 ```bash
 # Start HSQLDB server (if not running)
-cd /path/to/hsqldb
-java -cp hsqldb.jar org.hsqldb.server.Server --database.0 file:mydb --dbname.0 mydb
+cd hsqldb
+java -cp hsqldb.jar org.hsqldb.server.Server --database.0 file:mydb --dbname.0 mydb --port 9002 &
+
+# Create tables (run once)
+javac -cp hsqldb.jar CreateSchema.java
+java -cp "hsqldb.jar:." CreateSchema
 ```
 
-## Step 5: Run Production Servers
+**IMPORTANT**: The FILE_DATA table MUST use BLOB type for large files:
+```sql
+CREATE TABLE file_data (
+    media_file_id INT PRIMARY KEY,
+    data BLOB,  -- Not VARBINARY! BLOB = unlimited size
+    FOREIGN KEY (media_file_id) REFERENCES media_files(id) ON DELETE CASCADE
+);
+```
 
-### Option A: Using JAR files (recommended)
-
+If you need to fix it:
 ```bash
-# Terminal 1: Start alchemyServer
+cd hsqldb
+javac -cp hsqldb.jar FixBlobTable.java
+java -cp "hsqldb.jar:." FixBlobTable
+```
+
+## Step 5: Start All Services
+
+### Master Restart Script (Recommended)
+
+Create `restart-all.sh`:
+```bash
+#!/bin/bash
+
+echo "Stopping all services..."
+pkill -f "alchemy.Main"
+pkill -f "lexicon.LexiconApplication"
+pkill -f "serve -s build"
+sleep 3
+
+echo "Starting AlchemyServer..."
 cd alchemyServer
-export CORS_ALLOWED_ORIGINS=https://your-frontend.playit.gg
-java -jar build/libs/alchemyServer-1.0.jar --spring.profiles.active=production
+./start.sh > /tmp/alchemy-server.log 2>&1 &
+sleep 10
 
-# Terminal 2: Start lexiconServer
-cd lexiconServer
-export CORS_ALLOWED_ORIGINS=https://your-frontend.playit.gg
-java -jar build/libs/lexiconServer-1.0.0.jar --spring.profiles.active=production
+echo "Starting LexiconServer..."
+cd ../lexiconServer
+./start.sh > /tmp/lexicon-server.log 2>&1 &
+sleep 10
 
-# Terminal 3: Serve frontend (using serve or similar)
-cd Lexicon
-npx serve -s build -l 3000
+echo "Starting Frontend..."
+cd ../Lexicon
+nohup npx serve -s build -l 3001 > /tmp/frontend.log 2>&1 &
+
+echo "All services started!"
 ```
 
-### Option B: Development mode with production config
+```bash
+chmod +x restart-all.sh
+./restart-all.sh
+```
+
+### Manual Start (Alternative)
 
 ```bash
-# Terminal 1: alchemyServer
+# Terminal 1: AlchemyServer
 cd alchemyServer
-export CORS_ALLOWED_ORIGINS=https://your-frontend.playit.gg
-./gradlew bootRun --args='--spring.profiles.active=production'
+./start.sh
 
-# Terminal 2: lexiconServer  
+# Terminal 2: LexiconServer  
 cd lexiconServer
-export CORS_ALLOWED_ORIGINS=https://your-frontend.playit.gg
-./gradlew bootRun --args='--spring.profiles.active=production'
+./start.sh
 
-# Terminal 3: React app
+# Terminal 3: Frontend
 cd Lexicon
-npm start
+npx serve -s build -l 3001
 ```
 
-## Step 6: Start playit.gg Tunnels
+## Step 6: Access Your Application
 
+Navigate to your frontend tunnel URL (using the IP address):
+```
+http://147.185.221.211:58938
+```
+
+Or try the hostname (may not work for remote users):
+```
+http://lexicon.playit.pub:58938
+```
+
+## Monitoring & Database Storage
+
+### Check Database Size
 ```bash
-# Terminal 4: Frontend tunnel
-playit tunnel tcp 3000
-
-# Terminal 5: Alchemy tunnel
-playit tunnel tcp 8080
-
-# Terminal 6: Lexicon tunnel
-playit tunnel tcp 36568
+cd hsqldb
+ls -lh mydb*
 ```
 
-## Step 7: Access Your Application
+Output shows:
+- `mydb.lobs` = Your uploaded files (grows dynamically)
+- `mydb.script` = Table structure and metadata
+- `mydb.log` = Transaction log
 
-Navigate to your frontend tunnel URL:
+Example:
 ```
-https://your-frontend.playit.gg
+-rw-rw-r-- 1 user user 4.4G Nov 29 18:20 mydb.lobs    # All uploaded files
+-rw-rw-r-- 1 user user 350M Nov 29 17:21 mydb.script  # Metadata
+-rw-rw-r-- 1 user user  16K Nov 29 18:21 mydb.log     # Log
 ```
 
-## Troubleshooting
+**Monitor storage in real-time:**
+```bash
+watch -n 5 'du -sh hsqldb/mydb.lobs'
+```
+
+### Check Server Health
+```bash
+curl http://localhost:8080/api/health
+curl http://localhost:36568/api/health
+```
+
+### View Logs
+```bash
+tail -f /tmp/alchemy-server.log
+tail -f /tmp/lexicon-server.log
+tail -f /tmp/frontend.log
+```
 
 ### CORS Errors
 - Verify `CORS_ALLOWED_ORIGINS` includes your frontend playit.gg URL

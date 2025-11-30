@@ -54,137 +54,242 @@ cd alchemyServer && git checkout dev && cd ..
 
 ### Step 2: Configure Environment Variables
 
-Both Java servers now support environment variable overrides. Create `.env` files based on the templates:
+**CRITICAL: You must use IP addresses, not PlayIt.gg hostnames for remote access!**
 
-#### **lexiconServer/.env**
-```bash
-cp lexiconServer/.env.example lexiconServer/.env
-nano lexiconServer/.env
+Both Java servers now support environment variable overrides. Create `.env` files:
+
+#### **Main Configuration (.env in root)**
+Create `full-back-end-server/.env`:
+```properties
+# PlayIt.gg Tunnel IP Addresses (NOT hostnames!)
+# Use nslookup to get IPs: nslookup your-tunnel.playit.gg
+ALCHEMY_IP=147.185.221.224
+ALCHEMY_PORT=9675
+LEXICON_IP=147.185.221.224
+LEXICON_PORT=9686
+FRONTEND_IP=147.185.221.211
+FRONTEND_PORT=58938
+
+# Backend URLs (using IPs)
+REACT_APP_API_URL=http://${ALCHEMY_IP}:${ALCHEMY_PORT}
+REACT_APP_LEXICON_API_URL=http://${LEXICON_IP}:${LEXICON_PORT}
+REACT_APP_FRONTEND_URL=http://${FRONTEND_IP}:${FRONTEND_PORT}
+
+# CORS - include both IP and hostname versions
+CORS_ALLOWED_ORIGINS=http://${FRONTEND_IP}:${FRONTEND_PORT},http://lexicon.playit.pub:58938,http://localhost:3001
 ```
 
-Edit with your production values:
+#### **lexiconServer/.env**
 ```properties
 # Server Configuration
 LEXICON_PORT=36568
 SERVER_ADDRESS=0.0.0.0
 
-# Database Configuration
-DATABASE_URL=jdbc:hsqldb:hsql://YOUR_DB_HOST:9002/mydb
+# CORS Configuration (use IPs!)
+CORS_ALLOWED_ORIGINS=http://147.185.221.211:58938,http://lexicon.playit.pub:58938,http://localhost:3001
 
-# File Upload Configuration
-MAX_FILE_SIZE=100MB
-MAX_REQUEST_SIZE=100MB
-UPLOAD_DIR=/var/app/uploads
+# File Upload Configuration (IMPORTANT for large files!)
+MAX_FILE_SIZE=10GB
+MAX_REQUEST_SIZE=10GB
+UPLOAD_DIR=./uploads
+
+# Database
+DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
+
+# yt-dlp cookies (optional, for age-restricted content)
+YTDLP_COOKIES_PATH=./cookies.txt
 ```
 
-#### **alchemyServer/.env**
-```bash
-cp alchemyServer/.env.example alchemyServer/.env
-nano alchemyServer/.env
-```
+**Note on file sizes**: The MAX_FILE_SIZE uses BLOB storage which is **dynamic** - a 10MB file takes 10MB, a 1.5GB file takes 1.5GB. No wasted space!
 
-Edit with your production values:
+#### **Frontend Configuration (Lexicon/.env.production)**
 ```properties
-# Server Configuration
-ALCHEMY_PORT=8080
-SERVER_ADDRESS=0.0.0.0
+# Backend URLs (MUST use IP addresses!)
+REACT_APP_API_URL=http://147.185.221.224:9675
+REACT_APP_LEXICON_API_URL=http://147.185.221.224:9686
+REACT_APP_FRONTEND_URL=http://147.185.221.211:58938
 
-# Database Configuration
-DATABASE_URL=jdbc:hsqldb:hsql://YOUR_DB_HOST:9002/mydb
-
-# CORS Configuration
-CORS_ALLOWED_ORIGINS=http://YOUR_PRODUCTION_IP:3000,http://YOUR_PRODUCTION_IP:3001,https://yourdomain.com
-```
-
-#### **Frontend Configuration**
-
-**Lexicon/.env**
-```properties
-REACT_APP_API_URL=http://YOUR_PRODUCTION_IP:36568
-PORT=3001
+# Environment
 REACT_APP_ENV=production
 ```
 
-**alchemyServer/alchemy-ui/.env**
-```properties
-REACT_APP_API_URL=http://YOUR_PRODUCTION_IP:8080
-PORT=3000
+### Step 3: Start Services with Environment Variables
+
+**IMPORTANT**: Java servers must load .env files before starting!
+
+#### **Create Start Scripts**
+
+**lexiconServer/start.sh**:
+```bash
+#!/bin/bash
+# Load environment variables from .env file
+set -a
+source .env
+set +a
+
+# Start the server
+./gradlew bootRun
 ```
 
-### Step 3: Load Environment Variables
+**alchemyServer/start.sh**:
+```bash
+#!/bin/bash
+# Load environment variables from .env file
+set -a
+source .env
+set +a
 
-For the Java servers to read the `.env` files, you need to export them before starting:
+# Start the server
+./gradlew bootRun
+```
+
+Make them executable:
+```bash
+chmod +x lexiconServer/start.sh
+chmod +x alchemyServer/start.sh
+```
+
+#### **Master Restart Script**
+
+Create `restart-all.sh` in the root directory:
+```bash
+#!/bin/bash
+
+echo "Stopping all services..."
+pkill -f "alchemy.Main"
+pkill -f "lexicon.LexiconApplication"
+pkill -f "serve -s build"
+sleep 3
+
+echo "Starting HSQLDB..."
+cd hsqldb
+java -cp hsqldb.jar org.hsqldb.server.Server --database.0 file:mydb --dbname.0 mydb --port 9002 &
+sleep 5
+
+echo "Starting AlchemyServer..."
+cd ../alchemyServer
+./start.sh > /tmp/alchemy-server.log 2>&1 &
+sleep 10
+
+echo "Starting LexiconServer..."
+cd ../lexiconServer
+./start.sh > /tmp/lexicon-server.log 2>&1 &
+sleep 10
+
+echo "Starting Frontend..."
+cd ../Lexicon
+nohup npx serve -s build -l 3001 > /tmp/frontend.log 2>&1 &
+
+echo "All services started!"
+echo "Check logs:"
+echo "  tail -f /tmp/alchemy-server.log"
+echo "  tail -f /tmp/lexicon-server.log"
+echo "  tail -f /tmp/frontend.log"
+```
 
 ```bash
-# Option A: Source .env files manually
-cd lexiconServer
-export $(cat .env | xargs)
-cd ../alchemyServer
-export $(cat .env | xargs)
-
-# Option B: Use systemd service files (recommended for production)
-# See "Running as System Services" section below
+chmod +x restart-all.sh
+./restart-all.sh
 ```
 
 ### Step 4: Database Setup
 
 ```bash
 # 1. Start HSQLDB (if not already running)
-cd /path/to/hsqldb
+cd hsqldb
 java -cp hsqldb.jar org.hsqldb.server.Server \
-  --database.0 file:/var/app/db/mydb \
+  --database.0 file:mydb \
   --dbname.0 mydb \
   --port 9002 &
 
-# 2. Create media tables (one-time setup)
-# Connect to HSQLDB and run:
-sqlplus or use Java program to execute:
+# 2. Create media tables using provided script
+# The CreateSchema.java will create both MEDIA_FILES and FILE_DATA tables
+cd hsqldb
+javac -cp hsqldb.jar CreateSchema.java
+java -cp "hsqldb.jar:." CreateSchema
 
+# 3. IMPORTANT: FILE_DATA must use BLOB for large files!
+# The schema creates:
 CREATE TABLE media_files (
     id INT PRIMARY KEY,
-    uploaded_by INT NOT NULL,
-    title VARCHAR(255) NOT NULL,
-    description VARCHAR(1000),
-    file_type VARCHAR(50),
+    filename VARCHAR(255),
+    original_filename VARCHAR(255),
+    content_type VARCHAR(100),
     file_size BIGINT,
-    upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    file_path VARCHAR(500),
+    uploaded_by INT,
+    title VARCHAR(255),
+    description VARCHAR(1000),
     is_public BOOLEAN DEFAULT FALSE,
-    tags VARCHAR(500)
+    upload_date TIMESTAMP,
+    media_type VARCHAR(50),
+    source_url VARCHAR(1000)
 );
 
 CREATE TABLE file_data (
     media_file_id INT PRIMARY KEY,
-    file_data BLOB,
+    data BLOB,  -- BLOB allows unlimited file sizes (dynamic storage!)
     FOREIGN KEY (media_file_id) REFERENCES media_files(id) ON DELETE CASCADE
 );
 ```
+
+**Why BLOB?** Using `BLOB` instead of `VARBINARY` provides dynamic storage - a 10MB file uses 10MB, a 1.5GB file uses 1.5GB. No wasted space or array size limits!
 
 ### Step 5: Build and Deploy
 
 ```bash
 # Build lexiconServer
 cd lexiconServer
-export $(cat .env | xargs)
-./mvnw clean package -DskipTests
-java -jar target/lexiconServer-*.jar &
+./gradlew build
+# Server will start via start.sh script
 
 # Build alchemyServer
 cd ../alchemyServer
-export $(cat .env | xargs)
-./mvnw clean package -DskipTests
-java -jar target/alchemyServer-*.jar &
-
-# Build and serve Alchemy UI
-cd alchemy-ui
-npm install
-npm run build
-npx serve -s build -p 3000 &
+./gradlew build
+# Server will start via start.sh script
 
 # Build and serve Lexicon UI
-cd ../../Lexicon
+cd ../Lexicon
 npm install
 npm run build
-npx serve -s build -p 3001 &
+npx serve -s build -l 3001 &
+```
+
+---
+
+## Checking Database Storage Size
+
+Your uploaded files are stored in the HSQLDB database. To check current storage:
+
+```bash
+cd hsqldb
+ls -lh mydb*
+```
+
+You'll see:
+- `mydb.lobs` - Contains all uploaded file data (BLOB storage)
+- `mydb.script` - Contains table structures and metadata
+- `mydb.log` - Transaction log
+
+**Example output:**
+```
+-rw-rw-r-- 1 user user 4.4G Nov 29 18:20 mydb.lobs    # Your uploaded files
+-rw-rw-r-- 1 user user 350M Nov 29 17:21 mydb.script  # Metadata
+-rw-rw-r-- 1 user user  16K Nov 29 18:21 mydb.log     # Transaction log
+```
+
+The `mydb.lobs` file grows dynamically:
+- Upload a 10MB file → grows by ~10MB
+- Upload a 1.5GB file → grows by ~1.5GB
+- Delete a file → space can be reclaimed
+
+**Monitor storage:**
+```bash
+# Watch storage in real-time
+watch -n 5 'du -sh hsqldb/mydb.lobs'
+
+# Check total database size
+du -sh hsqldb/
 ```
 
 ---

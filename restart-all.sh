@@ -13,7 +13,8 @@ echo -e "${BLUE}Restarting Full Back-End Server...${NC}\n"
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Set CORS origins for production (PlayIt tunnel URLs)
-export CORS_ALLOWED_ORIGINS="http://lexicon.playit.pub:58938,http://localhost:3001,http://localhost:3000"
+# Include all possible origins: hostnames, IPs, with/without ports
+export CORS_ALLOWED_ORIGINS="http://lexicon.playit.pub:58938,https://lexicon.playit.pub:58938,http://147.185.221.211:58938,https://147.185.221.211:58938,http://gets-nintendo.gl.at.ply.gg:9675,https://gets-nintendo.gl.at.ply.gg:9675,http://147.185.221.224:9675,http://award-kirk.gl.at.ply.gg:9686,https://award-kirk.gl.at.ply.gg:9686,http://localhost:3001,http://localhost:3000"
 
 # Stop all services first
 echo -e "${RED}Stopping all services...${NC}"
