@@ -43,7 +43,7 @@ else
     echo "Attempting to stop services by port..."
     
     # Kill processes on known ports
-    for PORT in 3000 8080 36568 9002; do
+    for PORT in 3001 8080 36568 9002; do
         PID=$(lsof -ti:$PORT)
         if [ ! -z "$PID" ]; then
             echo "Killing process on port $PORT (PID: $PID)"
