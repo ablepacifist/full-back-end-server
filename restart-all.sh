@@ -50,10 +50,10 @@ echo -e "${GREEN}AlchemyServer started (PID: $ALCHEMY_PID)${NC}"
 # Wait for alchemy to start
 sleep 5
 
-# Start LexiconServer
+# Start LexiconServer with increased heap memory for large file uploads
 echo -e "\n${BLUE}Starting LexiconServer...${NC}"
 cd "$BASE_DIR/lexiconServer"
-nohup ./gradlew bootRun > "$BASE_DIR/logs/lexicon.log" 2>&1 &
+nohup ./gradlew bootRun -Dorg.gradle.jvmargs="-Xmx2g -Xms512m" > "$BASE_DIR/logs/lexicon.log" 2>&1 &
 LEXICON_PID=$!
 echo -e "${GREEN}LexiconServer started (PID: $LEXICON_PID)${NC}"
 

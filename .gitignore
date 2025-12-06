@@ -3,6 +3,24 @@ logs/
 .pids
 *.log
 
+# Database files
+hsqldb/
+*.lck
+*.properties
+*.script
+*.lobs
+mydb.*
+alchemydb.*
+
+# Build directories
+build/
+bin/
+.gradle/
+target/
+
+# Node modules
+node_modules/
+
 # Environment files with secrets
 .env.local
 .env.*.local
@@ -11,6 +29,9 @@ logs/
 # Keep templates
 !.env.development
 !.env.production
+# Keep application.properties in resources
+!**/src/main/resources/application.properties
+!**/gradle/wrapper/gradle-wrapper.properties
 
 # OS
 .DS_Store
@@ -22,4 +43,10 @@ Thumbs.db
 *.swp
 *.swo
 *~
-hsqldb/
+
+# Uploads directory
+uploads/
+
+# Temporary files
+*.tmp
+cookies.txt

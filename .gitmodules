@@ -2,3 +2,11 @@
 	path = Lexicon
 	url = https://github.com/ablepacifist/Lexicon.git
 	branch = dev
+[submodule "lexiconServer"]
+	path = lexiconServer
+	url = https://github.com/ablepacifist/lexiconServer.git
+	branch = main
+[submodule "alchemyServer"]
+	path = alchemyServer
+	url = https://github.com/ablepacifist/alchemyServer.git
+	branch = main
