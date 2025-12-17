@@ -4,10 +4,11 @@
 # This script monitors a directory for new audiobook files and uploads them to Lexicon
 # Also creates playlists for detected series
 
-WATCH_DIR="$HOME/audiobooks-import"
+# OpenAudible directory - where the mp3 files are stored
+WATCH_DIR="$HOME/OpenAudible/books"
 LEXICON_API="http://localhost:36568/api/media"
 PLAYLIST_API="http://localhost:36568/api/playlists"
-USER_ID=1  # Change this to your user ID
+USER_ID=1  # User ID for zx
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -23,10 +24,26 @@ declare -A SERIES_MAP
 echo -e "${GREEN}=== Lexicon Audiobook Importer ===${NC}"
 echo "Watching directory: $WATCH_DIR"
 echo "Lexicon API: $LEXICON_API"
+echo "User ID: $USER_ID"
 echo ""
 
-# Create watch directory if it doesn't exist
-mkdir -p "$WATCH_DIR"
+# Create processed tracking directory
+PROCESSED_DIR="$HOME/.lexicon-import"
+mkdir -p "$PROCESSED_DIR"
+
+# Function to check if file was already processed
+is_already_processed() {
+    local filename="$1"
+    local md5hash=$(md5sum "$filename" | cut -d' ' -f1)
+    [ -f "$PROCESSED_DIR/$md5hash" ]
+}
+
+# Function to mark file as processed
+mark_as_processed() {
+    local filename="$1"
+    local md5hash=$(md5sum "$filename" | cut -d' ' -f1)
+    touch "$PROCESSED_DIR/$md5hash"
+}
 
 # Function to detect series name and book number
 detect_series() {
@@ -51,6 +68,12 @@ upload_audiobook() {
     local file="$1"
     local filename=$(basename "$file")
     local title="${filename%.*}"  # Remove extension
+    
+    # Check if already processed
+    if is_already_processed "$file"; then
+        echo -e "${YELLOW}⊘ Already processed: $filename${NC}"
+        return
+    fi
     
     echo -e "${YELLOW}Uploading: $filename${NC}"
     
@@ -78,6 +101,9 @@ upload_audiobook() {
         
         echo -e "${GREEN}✓ Successfully uploaded: $title (ID: $media_id)${NC}"
         
+        # Mark as processed
+        mark_as_processed "$file"
+        
         # Store in our tracking
         UPLOADED_FILES["$title"]=$media_id
         
@@ -86,18 +112,9 @@ upload_audiobook() {
             local series_key="${series_name}"
             SERIES_MAP["$series_key"]+="${media_id}:${book_number},"
         fi
-        
-        # Move to processed folder
-        mkdir -p "$WATCH_DIR/processed"
-        mv "$file" "$WATCH_DIR/processed/"
-        echo -e "  Moved to processed folder"
     else
         echo -e "${RED}✗ Failed to upload: $title${NC}"
         echo "  Response: $response"
-        
-        # Move to failed folder
-        mkdir -p "$WATCH_DIR/failed"
-        mv "$file" "$WATCH_DIR/failed/"
     fi
     
     echo ""

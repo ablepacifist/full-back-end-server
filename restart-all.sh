@@ -14,7 +14,7 @@ BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Set CORS origins for production (PlayIt tunnel URLs)
 # Include all possible origins: hostnames, IPs, with/without ports
-export CORS_ALLOWED_ORIGINS="http://lexicon.playit.pub:58938,https://lexicon.playit.pub:58938,http://147.185.221.211:58938,https://147.185.221.211:58938,http://gets-nintendo.gl.at.ply.gg:9675,https://gets-nintendo.gl.at.ply.gg:9675,http://147.185.221.224:9675,http://award-kirk.gl.at.ply.gg:9686,https://award-kirk.gl.at.ply.gg:9686,http://localhost:3001,http://localhost:3000"
+export CORS_ALLOWED_ORIGINS="http://lexicon.playit.pub:15903,https://lexicon.playit.pub:15903,http://147.185.221.24:15903,https://147.185.221.24:15903,http://type-magnetic.gl.at.ply.gg:15821,https://type-magnetic.gl.at.ply.gg:15821,http://147.185.221.24:15821,http://through-sponsor.gl.at.ply.gg:15856,https://through-sponsor.gl.at.ply.gg:15856,http://147.185.221.24:15856,http://localhost:3001,http://localhost:3000"
 
 # Stop all services first
 echo -e "${RED}Stopping all services...${NC}"
@@ -28,9 +28,9 @@ mkdir -p "$BASE_DIR/logs"
 
 # Start HSQLDB
 echo -e "\n${BLUE}Starting HSQLDB...${NC}"
-cd "$BASE_DIR/hsqldb"
-nohup java -cp hsqldb.jar org.hsqldb.server.Server \
-    --database.0 file:mydb \
+cd "$BASE_DIR/alchemyServer"
+nohup java -cp lib/hsqldb.jar org.hsqldb.server.Server \
+    --database.0 file:alchemydb \
     --dbname.0 mydb \
     --port 9002 > "$BASE_DIR/logs/database.log" 2>&1 &
 DB_PID=$!
@@ -38,22 +38,22 @@ echo -e "${GREEN}Database started (PID: $DB_PID)${NC}"
 
 # Wait for database to be ready
 echo "Waiting for database..."
-sleep 3
+sleep 5
 
 # Start AlchemyServer
 echo -e "\n${BLUE}Starting AlchemyServer...${NC}"
 cd "$BASE_DIR/alchemyServer"
-nohup ./gradlew bootRun > "$BASE_DIR/logs/alchemy.log" 2>&1 &
+nohup env CORS_ALLOWED_ORIGINS="$CORS_ALLOWED_ORIGINS" ./gradlew bootRun > "$BASE_DIR/logs/alchemy.log" 2>&1 &
 ALCHEMY_PID=$!
 echo -e "${GREEN}AlchemyServer started (PID: $ALCHEMY_PID)${NC}"
 
 # Wait for alchemy to start
-sleep 5
+sleep 10
 
-# Start LexiconServer with increased heap memory for large file uploads
-echo -e "\n${BLUE}Starting LexiconServer...${NC}"
+# Start LexiconServer with increased heap memory for large file uploads (2-3GB audiobooks)
+echo -e "\n${BLUE}Starting LexiconServer (12GB heap for large files)...${NC}"
 cd "$BASE_DIR/lexiconServer"
-nohup ./gradlew bootRun -Dorg.gradle.jvmargs="-Xmx2g -Xms512m" > "$BASE_DIR/logs/lexicon.log" 2>&1 &
+nohup env CORS_ALLOWED_ORIGINS="$CORS_ALLOWED_ORIGINS" ./gradlew bootRun -Dorg.gradle.jvmargs="-Xmx12g -Xms2g -XX:+UseG1GC -XX:MaxGCPauseMillis=200" > "$BASE_DIR/logs/lexicon.log" 2>&1 &
 LEXICON_PID=$!
 echo -e "${GREEN}LexiconServer started (PID: $LEXICON_PID)${NC}"
 
@@ -82,9 +82,9 @@ echo "  LexiconServer:  http://localhost:36568"
 echo "  Database:       localhost:9002"
 
 echo -e "\n${BLUE}PlayIt.gg Tunnel URLs:${NC}"
-echo "  Frontend:       http://lexicon.playit.pub:58938"
-echo "  AlchemyServer:  http://gets-nintendo.gl.at.ply.gg:9675"
-echo "  LexiconServer:  http://award-kirk.gl.at.ply.gg:9686"
+echo "  Frontend:       http://lexicon.playit.pub:15903 or http://147.185.221.24:15903"
+echo "  AlchemyServer:  http://type-magnetic.gl.at.ply.gg:15821 or http://147.185.221.24:15821"
+echo "  LexiconServer:  http://through-sponsor.gl.at.ply.gg:15856 or http://147.185.221.24:15856"
 
 echo -e "\n${BLUE}Check logs:${NC}"
 echo "  tail -f logs/database.log"
