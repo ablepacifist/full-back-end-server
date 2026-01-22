@@ -464,18 +464,3 @@ cd ../../Lexicon && npm run build
 ---
 ---
 
-## Quick Start Checklist
-
-- [ ] Clone all three repositories
-- [ ] Copy `.env.example` to `.env` in both Java servers
-- [ ] Update `.env` files with production values
-- [ ] Create frontend `.env` files with correct API URLs
-- [ ] Start HSQLDB database
-- [ ] Create media tables in database
-- [ ] Build and start Java servers (with env vars loaded)
-- [ ] Build and serve frontends
-- [ ] Test all endpoints
-- [ ] Set up systemd services for production
-- [ ] Configure reverse proxy with SSL
-
-**No more hardcoded IPs! Just update your `.env` files and restart!**
