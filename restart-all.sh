@@ -14,7 +14,7 @@ BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Set CORS origins for production (PlayIt tunnel URLs)
 # Include all possible origins: hostnames, IPs, with/without ports
-export CORS_ALLOWED_ORIGINS="http://lexicon.playit.pub:15903,https://lexicon.playit.pub:15903,http://147.185.221.24:15903,https://147.185.221.24:15903,http://type-magnetic.gl.at.ply.gg:15821,https://type-magnetic.gl.at.ply.gg:15821,http://147.185.221.24:15821,http://through-sponsor.gl.at.ply.gg:15856,https://through-sponsor.gl.at.ply.gg:15856,http://147.185.221.24:15856,http://localhost:3001,http://localhost:3000"
+export CORS_ALLOWED_ORIGINS="http://lexicon.playit.pub:15903,https://lexicon.playit.pub:15903,http://147.185.221.24:15903,https://147.185.221.24:15903,http://type-magnetic.gl.at.ply.gg:15821,https://type-magnetic.gl.at.ply.gg:15821,http://147.185.221.24:15821,http://through-sponsor.gl.at.ply.gg:15856,https://through-sponsor.gl.at.ply.gg:15856,http://147.185.221.24:15856,http://localhost:3001,http://localhost:3000,http://192.168.4.29:3001,http://192.168.4.29:8080,http://192.168.4.29:36568"
 
 # Stop all services first
 echo -e "${RED}Stopping all services...${NC}"
