@@ -68,9 +68,9 @@ if [ ! -d "build" ]; then
     npm run build
 fi
 
-nohup npx serve -s build -l 3001 > "$BASE_DIR/logs/frontend.log" 2>&1 &
+nohup npx serve -s build -l tcp://0.0.0.0:3001 > "$BASE_DIR/logs/frontend.log" 2>&1 &
 FRONTEND_PID=$!
-echo -e "${GREEN}Frontend started (PID: $FRONTEND_PID)${NC}"
+echo -e "${GREEN}Frontend started (PID: $FRONTEND_PID) on 0.0.0.0:3001 (IPv4)${NC}"
 
 sleep 3
 
