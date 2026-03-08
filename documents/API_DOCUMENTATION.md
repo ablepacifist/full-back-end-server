@@ -1460,60 +1460,6 @@ Manually advance to next media (admin/testing).
 
 ---
 
-## Live Stream (Lightweight)
-
-Base Path: `/api/livestream/light`
-
-**Use Case:** Lightweight SSE stream for slow connections (queue operations only).
-
-### GET /api/livestream/light/state
-Get current playing media only (no queue data).
-
-**Response (200):**
-```json
-{
-  "success": true,
-  "currentMediaId": 123,
-  "currentMedia": { /* MediaFile object */ },
-  "currentStartTime": "2026-02-14T10:00:00",
-  "currentPositionMs": 0,
-  "requiredSkipVotes": 1,
-  "totalSkipVotes": 0,
-  "timestamp": 1708000000000
-}
-```
-
----
-
-### POST /api/livestream/light/queue
-Add to queue (same as full version).
-
----
-
-### DELETE /api/livestream/light/queue/{queueId}?userId={userId}
-Remove from queue (same as full version).
-
----
-
-### POST /api/livestream/light/skip
-Vote to skip (same as full version).
-
----
-
-### GET <mark>/api/livestream/light/updates</mark>
-**SSE** stream for lightweight real-time updates.
-
-**Event Types:**
-- `heartbeat`: Connection established
-- `state-update-light`: State changed (minimal payload)
-
-**Notes:**
-- Much smaller payload than full `/updates`
-- Only sends state changes, no queue data
-- Better for slow connections
-
----
-
 ## Media Streaming
 
 Base Path: `/api/stream`
@@ -1777,7 +1723,6 @@ allowedOriginPatterns.add("https://your-domain\.com");
 ### 5. Real-Time Updates
 - Use SSE endpoints for live updates:
   - `/api/livestream/updates` - Full stream updates
-  - `/api/livestream/light/updates` - Lightweight stream
   - `/api/media/chunked/progress/{uploadId}` - Chunk upload progress
   - `/api/playlists/import-progress/{importId}` - Playlist import progress
 
@@ -1803,7 +1748,6 @@ if (!response.ok) {
 ```
 
 ### 9. Performance Tips
-- Use `/api/livestream/light/state` instead of full state when queue not needed
 - Poll `/api/download-queue/status/{jobId}` at reasonable intervals (5-10 seconds)
 - Cache media file metadata to reduce API calls
 - Use SSE for real-time updates instead of polling

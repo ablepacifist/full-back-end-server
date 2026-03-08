@@ -47,7 +47,7 @@ From `cors.allowed.origins` property + hardcoded additions:
 - `https://mumble.alex-dyakin.com`
 
 ### SSE note
-`/api/livestream/updates` and `/api/livestream/light/updates` explicitly set `allowCredentials = false` at method level.
+`/api/livestream/updates` explicitly sets `allowCredentials = false` at method level.
 
 ## Alchemy (`alchemyServer`)
 Configured in both `SecurityConfig` and `CorsConfig`.
@@ -184,15 +184,6 @@ Most endpoints accept `?channel=video|music` (default `video`).
 - `GET /api/livestream/updates` (SSE)
 - `POST /api/livestream/media-ended`
 - `POST /api/livestream/advance`
-
-## Live stream lightweight (`/api/livestream/light`)
-Also channel-aware via `?channel=video|music`.
-
-- `GET /api/livestream/light/state`
-- `POST /api/livestream/light/queue`
-- `DELETE /api/livestream/light/queue/{queueId}`
-- `POST /api/livestream/light/skip`
-- `GET /api/livestream/light/updates` (SSE)
 
 ## Stream transport (`/api/stream`)
 - `GET /api/stream/{mediaFileId}`
