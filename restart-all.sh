@@ -32,7 +32,7 @@ mkdir -p "$BASE_DIR/logs"
 # Start HSQLDB
 echo -e "\n${BLUE}Starting HSQLDB...${NC}"
 cd "$BASE_DIR/alchemyServer"
-nohup java -cp lib/hsqldb.jar org.hsqldb.server.Server \
+nohup java -Xmx512m -Xms128m -cp lib/hsqldb.jar org.hsqldb.server.Server \
     --database.0 file:alchemydb \
     --dbname.0 mydb \
     --port 9002 > "$BASE_DIR/logs/database.log" 2>&1 &
