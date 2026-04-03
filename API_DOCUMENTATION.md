@@ -25,7 +25,9 @@
 10. [Live Stream](#live-stream)
 11. [Live Stream (Lightweight)](#live-stream-lightweight)
 12. [Media Streaming](#media-streaming)
-13. [Data Models](#data-models)
+13. [Chat Files (Rich Media Chat)](#chat-files-rich-media-chat)
+14. [Text Messages](#text-messages)
+15. [Data Models](#data-models)
 
 ---
 
@@ -1487,6 +1489,229 @@ Stream media file with range support.
 
 ---
 
+## Chat Files (Rich Media Chat)
+
+Base Path: `/api/chat`
+
+**Use Case:** Upload and serve images/GIFs in chat channels. Used by the Mumble bridge for rich media chat messages.
+
+### POST /api/chat/upload
+Upload an image or GIF for use in chat messages.
+
+**Content-Type:** `multipart/form-data`
+
+**Form Fields:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| file | File | Yes | Image/GIF file to upload |
+| userId | integer | Yes | Lexicon user ID of uploader |
+| channelId | integer | Yes | Mumble channel ID where file is shared |
+
+**Constraints:**
+- Max file size: **8 MB**
+- Accepted MIME types: `image/jpeg`, `image/png`, `image/gif`, `image/webp`
+- Thumbnails generated automatically (max 400px wide, JPEG)
+- GIFs are served as-is (no static thumbnail conversion)
+
+**Response (200):**
+```json
+{
+  "id": 12345,
+  "url": "/api/chat/files/12345",
+  "thumbnailUrl": "/api/chat/files/12345/thumb",
+  "originalFilename": "screenshot.png",
+  "mimeType": "image/png",
+  "width": 1920,
+  "height": 1080,
+  "fileSize": 245760,
+  "uploadedBy": 7,
+  "createdAt": "2026-04-03T12:00:00"
+}
+```
+
+**Error Responses:**
+- `400`: File too large, unsupported type, or missing fields
+- `500`: Storage or processing failure
+
+---
+
+### GET /api/chat/files/{fileId}
+Serve the original uploaded file.
+
+**Path Parameters:**
+- `fileId` (long): Chat file ID from upload response
+
+**Response (200):**
+- Binary file data with correct `Content-Type` header
+- `Cache-Control: public, max-age=31536000` (immutable files)
+
+**Error Responses:**
+- `404`: File not found
+
+---
+
+### GET /api/chat/files/{fileId}/thumb
+Serve the thumbnail version of an uploaded file.
+
+**Path Parameters:**
+- `fileId` (long): Chat file ID from upload response
+
+**Response (200):**
+- Thumbnail image (JPEG, max 400px wide)
+- Falls back to original file if no thumbnail was generated (e.g., small images, GIFs)
+- `Cache-Control: public, max-age=31536000`
+
+**Error Responses:**
+- `404`: File not found
+
+---
+
+## Text Messages
+
+Base Path: `/api/messages`
+
+**Use Case:** Store and retrieve text messages for Mumble bridge chat integration. Supports rich media messages with image/GIF attachments.
+
+### POST /api/messages
+Store a new text message.
+
+**Request Body:**
+```json
+{
+  "channelId": 1,
+  "channelName": "general",
+  "userId": 7,
+  "username": "alex",
+  "content": "Check this out!",
+  "messageType": "IMAGE",
+  "mediaFileId": 12345
+}
+```
+
+**Message Types:**
+| Type | Description |
+|---|---|
+| `TEXT` | Plain text message (default) |
+| `IMAGE` | Message with uploaded image attachment |
+| `GIF` | Message with uploaded GIF attachment |
+| `MIXED` | Text message with one or more attachments |
+| `MEDIA_SHARE` | Shared media library item |
+| `SYSTEM` | System notification |
+| `BOT_COMMAND` | Bot command message |
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "messageId": 501
+}
+```
+
+---
+
+### GET /api/messages/channel/{channelId}
+Get message history for a channel with pagination.
+
+**Path Parameters:**
+- `channelId` (integer): Channel ID
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| limit | integer | 50 | Max messages to return (1-200) |
+| before | string | null | ISO 8601 timestamp for pagination |
+
+**Response (200):**
+```json
+[
+  {
+    "id": 501,
+    "channelId": 1,
+    "channelName": "general",
+    "userId": 7,
+    "username": "alex",
+    "content": "Check this out!",
+    "messageType": "IMAGE",
+    "mediaFileId": 12345,
+    "attachment": {
+      "id": 12345,
+      "url": "/api/chat/files/12345",
+      "thumbnailUrl": "/api/chat/files/12345/thumb",
+      "originalFilename": "screenshot.png",
+      "mimeType": "image/png",
+      "width": 1920,
+      "height": 1080,
+      "fileSize": 245760
+    },
+    "isPinned": false,
+    "createdAt": "2026-04-03T12:00:00",
+    "editedAt": null,
+    "deletedAt": null
+  }
+]
+```
+
+**Notes:**
+- Messages with `messageType` of `IMAGE`, `GIF`, or `MIXED` include an `attachment` object with file metadata and serving URLs
+- `attachment` is `null` for plain `TEXT` messages
+- Messages are returned in reverse chronological order
+
+---
+
+### GET /api/messages/{id}
+Get a single message by ID.
+
+**Response (200):** Single message object (same shape as above)
+
+---
+
+### PUT /api/messages/{id}?userId={userId}
+Edit a message (owner only).
+
+**Query Parameters:**
+- `userId` (integer): ID of the user attempting the edit
+
+**Request Body:**
+```json
+{
+  "content": "Updated message text"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+### DELETE /api/messages/{id}?userId={userId}
+Soft-delete a message (owner only).
+
+**Response (200):**
+```json
+{
+  "success": true
+}
+```
+
+---
+
+### GET /api/messages/search?q={term}&channelId={channelId}
+Search messages by content.
+
+**Query Parameters:**
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| q | string | required | Search term |
+| channelId | integer | -1 | Filter by channel (-1 = all) |
+
+**Response (200):** Array of matching message objects (with attachment data if applicable)
+
+---
+
 ## Data Models
 
 ### Player / User
@@ -1518,6 +1743,52 @@ Stream media file with range support.
   mediaType: "MUSIC" | "VIDEO" | "AUDIOBOOK" | "OTHER";
   sourceUrl: string | null; // original URL if downloaded
   isPublic: boolean;
+}
+```
+
+### ChatFile
+```typescript
+{
+  id: number;
+  originalFilename: string;
+  storedFilename: string;
+  mimeType: string; // image/jpeg, image/png, image/gif, image/webp
+  fileSize: number; // bytes
+  width: number | null; // pixels
+  height: number | null; // pixels
+  thumbnailFilename: string | null;
+  uploadedBy: number; // user ID
+  channelId: number | null;
+  createdAt: string; // ISO 8601
+}
+```
+
+### TextMessage
+```typescript
+{
+  id: number;
+  channelId: number;
+  channelName: string;
+  userId: number;
+  username: string;
+  content: string;
+  messageType: "TEXT" | "IMAGE" | "GIF" | "MIXED" | "MEDIA_SHARE" | "SYSTEM" | "BOT_COMMAND";
+  mediaFileId: number | null; // references ChatFile.id for IMAGE/GIF/MIXED
+  replyToId: number | null;
+  isPinned: boolean;
+  attachment: { // populated for IMAGE/GIF/MIXED messages
+    id: number;
+    url: string;
+    thumbnailUrl: string;
+    originalFilename: string;
+    mimeType: string;
+    width: number | null;
+    height: number | null;
+    fileSize: number;
+  } | null;
+  createdAt: string; // ISO 8601
+  editedAt: string | null;
+  deletedAt: string | null;
 }
 ```
 

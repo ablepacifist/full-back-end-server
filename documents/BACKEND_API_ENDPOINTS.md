@@ -197,6 +197,11 @@ Most endpoints accept `?channel=video|music` (default `video`).
 - `DELETE /api/messages/{id}`
 - `GET /api/messages/search`
 
+## Chat Files (`/api/chat`) — Rich Media Chat
+- `POST /api/chat/upload` — Upload image/GIF for chat (multipart: file, userId, channelId)
+- `GET /api/chat/files/{fileId}` — Serve original file
+- `GET /api/chat/files/{fileId}/thumb` — Serve thumbnail (max 400px wide)
+
 ## Avatar proxy (`/api/avatar`)
 - `GET /api/avatar/{username}`
 - `POST /api/avatar/upload`
