@@ -12,9 +12,12 @@ echo -e "${BLUE}Restarting Full Back-End Server...${NC}\n"
 # Get base directory
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Set CORS origins for production (PlayIt tunnel URLs)
+# Set CORS origins for production (PlayIt tunnel URLs + Cloudflare HTTPS)
 # Include all possible origins: hostnames, IPs, with/without ports
-export CORS_ALLOWED_ORIGINS="http://lexicon.playit.pub:15903,https://lexicon.playit.pub:15903,http://147.185.221.24:15903,https://147.185.221.24:15903,http://type-magnetic.gl.at.ply.gg:15821,https://type-magnetic.gl.at.ply.gg:15821,http://147.185.221.24:15821,http://through-sponsor.gl.at.ply.gg:15856,https://through-sponsor.gl.at.ply.gg:15856,http://147.185.221.24:15856,http://localhost:3001,http://localhost:3000,http://192.168.4.29:3001,http://192.168.4.29:8080,http://192.168.4.29:36568"
+export CORS_ALLOWED_ORIGINS="https://alex-dyakin.com,https://api.alex-dyakin.com,https://alchemy.alex-dyakin.com,http://lexicon.playit.pub:15903,https://lexicon.playit.pub:15903,http://147.185.221.24:15903,https://147.185.221.24:15903,http://type-magnetic.gl.at.ply.gg:15821,https://type-magnetic.gl.at.ply.gg:15821,http://147.185.221.24:15821,http://through-sponsor.gl.at.ply.gg:15856,https://through-sponsor.gl.at.ply.gg:15856,http://147.185.221.24:15856,http://localhost:3001,http://localhost:3000,http://192.168.4.29:3001,http://192.168.4.29:8080,http://192.168.4.29:36568"
+
+# yt-dlp cookies for YouTube downloads
+export YTDLP_COOKIES_PATH="$BASE_DIR/cookies.txt"
 
 # Stop all services first
 echo -e "${RED}Stopping all services...${NC}"
@@ -29,16 +32,20 @@ mkdir -p "$BASE_DIR/logs"
 # Start HSQLDB
 echo -e "\n${BLUE}Starting HSQLDB...${NC}"
 cd "$BASE_DIR/alchemyServer"
-nohup java -cp lib/hsqldb.jar org.hsqldb.server.Server \
+nohup java -Xmx512m -Xms128m -cp lib/hsqldb.jar org.hsqldb.server.Server \
     --database.0 file:alchemydb \
     --dbname.0 mydb \
     --port 9002 > "$BASE_DIR/logs/database.log" 2>&1 &
 DB_PID=$!
 echo -e "${GREEN}Database started (PID: $DB_PID)${NC}"
 
-# Wait for database to be ready
+# Wait for database to be fully ready (can take 2+ minutes with large data files)
 echo "Waiting for database..."
-sleep 5
+while ! grep -q "is online on port" "$BASE_DIR/logs/database.log" 2>/dev/null; do
+    sleep 2
+    echo -n "."
+done
+echo -e "\n${GREEN}Database is online!${NC}"
 
 # Start AlchemyServer
 echo -e "\n${BLUE}Starting AlchemyServer...${NC}"
@@ -53,7 +60,7 @@ sleep 10
 # Start LexiconServer with increased heap memory for large file uploads (2-3GB audiobooks)
 echo -e "\n${BLUE}Starting LexiconServer (12GB heap for large files)...${NC}"
 cd "$BASE_DIR/lexiconServer"
-nohup env CORS_ALLOWED_ORIGINS="$CORS_ALLOWED_ORIGINS" ./gradlew bootRun -Dorg.gradle.jvmargs="-Xmx12g -Xms2g -XX:+UseG1GC -XX:MaxGCPauseMillis=200" > "$BASE_DIR/logs/lexicon.log" 2>&1 &
+nohup env CORS_ALLOWED_ORIGINS="$CORS_ALLOWED_ORIGINS" YTDLP_COOKIES_PATH="$YTDLP_COOKIES_PATH" ./gradlew bootRun -Dorg.gradle.jvmargs="-Xmx12g -Xms2g -XX:+UseG1GC -XX:MaxGCPauseMillis=200" > "$BASE_DIR/logs/lexicon.log" 2>&1 &
 LEXICON_PID=$!
 echo -e "${GREEN}LexiconServer started (PID: $LEXICON_PID)${NC}"
 
