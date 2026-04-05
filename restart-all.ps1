@@ -6,6 +6,10 @@ $ErrorActionPreference = "Continue"
 # Refresh PATH (picks up Java/Node if recently installed)
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 
+# Set JAVA_HOME
+$env:JAVA_HOME = "C:\Program Files\Microsoft\jdk-17.0.18.8-hotspot"
+$env:Path = "$env:JAVA_HOME\bin;$env:Path"
+
 # Get base directory
 $BASE_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -38,6 +42,21 @@ Start-Sleep -Seconds 3
 $logsDir = Join-Path $BASE_DIR "logs"
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 
+# ----- Mount ext4 HDD via WSL (if not already mounted) -----
+$hddPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage"
+if (-not (Test-Path $hddPath)) {
+    Write-Host "`nMounting ext4 HDD via WSL..." -ForegroundColor Cyan
+    $mountResult = Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE1", "--partition", "2", "--type", "ext4" -Verb RunAs -Wait -PassThru
+    Start-Sleep -Seconds 3
+    if (Test-Path $hddPath) {
+        Write-Host "  ext4 HDD mounted successfully" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: ext4 HDD mount may have failed!" -ForegroundColor Red
+    }
+} else {
+    Write-Host "`next4 HDD already mounted" -ForegroundColor Green
+}
+
 # ----- Start HSQLDB -----
 Write-Host "`nStarting HSQLDB..." -ForegroundColor Cyan
 $hsqldbLog = Join-Path $logsDir "database.log"
@@ -46,7 +65,7 @@ Start-Process -FilePath "java" `
     -WorkingDirectory (Join-Path $BASE_DIR "alchemyServer") `
     -RedirectStandardOutput $hsqldbLog `
     -RedirectStandardError (Join-Path $logsDir "database-err.log") `
-    -NoNewWindow
+    -WindowStyle Hidden
 
 Write-Host "  Waiting for database..." -ForegroundColor Gray
 Start-Sleep -Seconds 5
@@ -63,12 +82,11 @@ if ($dbCheck) {
 Write-Host "`nStarting AlchemyServer..." -ForegroundColor Cyan
 $alchemyLog = Join-Path $logsDir "alchemy.log"
 Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c", "gradlew.bat bootRun > `"$alchemyLog`" 2>&1" `
-    -WorkingDirectory (Join-Path $BASE_DIR "alchemyServer") `
-    -NoNewWindow
+    -ArgumentList "/c `"set JAVA_HOME=$env:JAVA_HOME&& cd /d $BASE_DIR\alchemyServer && gradlew.bat bootRun > `"$alchemyLog`" 2>&1`"" `
+    -WindowStyle Hidden
 
 Write-Host "  Waiting for AlchemyServer to start..." -ForegroundColor Gray
-Start-Sleep -Seconds 15
+for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue) { break } }
 
 $alchemyCheck = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
 if ($alchemyCheck) {
@@ -81,12 +99,11 @@ if ($alchemyCheck) {
 Write-Host "`nStarting LexiconServer..." -ForegroundColor Cyan
 $lexiconLog = Join-Path $logsDir "lexicon.log"
 Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c", "gradlew.bat bootRun > `"$lexiconLog`" 2>&1" `
-    -WorkingDirectory (Join-Path $BASE_DIR "lexiconServer") `
-    -NoNewWindow
+    -ArgumentList "/c `"set JAVA_HOME=$env:JAVA_HOME&& cd /d $BASE_DIR\lexiconServer && gradlew.bat bootRun > `"$lexiconLog`" 2>&1`"" `
+    -WindowStyle Hidden
 
 Write-Host "  Waiting for LexiconServer to start..." -ForegroundColor Gray
-Start-Sleep -Seconds 15
+for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort 36568 -State Listen -ErrorAction SilentlyContinue) { break } }
 
 $lexiconCheck = Get-NetTCPConnection -LocalPort 36568 -State Listen -ErrorAction SilentlyContinue
 if ($lexiconCheck) {
@@ -109,9 +126,8 @@ if (-not (Test-Path (Join-Path $frontendDir "build"))) {
 }
 
 Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c", "npx serve -s build -l tcp://0.0.0.0:3001 > `"$frontendLog`" 2>&1" `
-    -WorkingDirectory $frontendDir `
-    -NoNewWindow
+    -ArgumentList "/c `"cd /d $frontendDir && npx serve -s build -l tcp://0.0.0.0:3001 > `"$frontendLog`" 2>&1`"" `
+    -WindowStyle Hidden
 
 Start-Sleep -Seconds 5
 
@@ -131,7 +147,7 @@ if (Test-Path $cloudflared) {
         -ArgumentList "tunnel", "run" `
         -RedirectStandardOutput $tunnelLog `
         -RedirectStandardError (Join-Path $logsDir "cloudflared-err.log") `
-        -NoNewWindow
+        -WindowStyle Hidden
     Start-Sleep -Seconds 3
     Write-Host "  Cloudflare Tunnel started" -ForegroundColor Green
 } else {
