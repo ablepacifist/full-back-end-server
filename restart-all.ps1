@@ -138,24 +138,67 @@ if ($frontendCheck) {
     Write-Host "  WARNING: Frontend may still be starting (check logs\frontend.log)" -ForegroundColor Yellow
 }
 
-# ----- Start Cloudflare Tunnel -----
-$cloudflared = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
-if (Test-Path $cloudflared) {
-    Write-Host "`nStarting Cloudflare Tunnel..." -ForegroundColor Cyan
-    $tunnelLog = Join-Path $logsDir "cloudflared.log"
-    Start-Process -FilePath $cloudflared `
-        -ArgumentList "tunnel", "run" `
-        -RedirectStandardOutput $tunnelLog `
-        -RedirectStandardError (Join-Path $logsDir "cloudflared-err.log") `
+# ----- Cloudflare Tunnel (Windows Service — auto-start, auto-restart on failure) -----
+$cfService = Get-Service -Name "Cloudflared" -ErrorAction SilentlyContinue
+if ($cfService) {
+    Write-Host "`nRestarting Cloudflare Tunnel service..." -ForegroundColor Cyan
+    if ($cfService.Status -ne 'Stopped') {
+        Start-Process sc.exe -ArgumentList "stop","Cloudflared" -Verb RunAs -Wait -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 3
+    }
+    Start-Process sc.exe -ArgumentList "start","Cloudflared" -Verb RunAs -Wait -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 5
+    $cfService = Get-Service -Name "Cloudflared"
+    if ($cfService.Status -eq 'Running') {
+        Write-Host "  Cloudflare Tunnel service running" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: Cloudflare Tunnel service status: $($cfService.Status)" -ForegroundColor Red
+    }
+} else {
+    Write-Host "`nCloudflare Tunnel: service not installed, skipping" -ForegroundColor Yellow
+}
+
+# ----- Start PlayIt Tunnel -----
+$playit = "C:\Program Files\playit_gg\bin\playit.exe"
+if (Test-Path $playit) {
+    # Kill existing playit
+    Get-Process -Name "playit" -ErrorAction SilentlyContinue | ForEach-Object {
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "`nStarting PlayIt Tunnel..." -ForegroundColor Cyan
+    $playitLog = Join-Path $logsDir "playit.log"
+    Start-Process -FilePath $playit `
+        -RedirectStandardOutput $playitLog `
+        -RedirectStandardError (Join-Path $logsDir "playit-err.log") `
         -WindowStyle Hidden
     Start-Sleep -Seconds 3
-    Write-Host "  Cloudflare Tunnel started" -ForegroundColor Green
+    Write-Host "  PlayIt Tunnel started" -ForegroundColor Green
 } else {
-    Write-Host "`nCloudflare Tunnel: cloudflared not found, skipping" -ForegroundColor Yellow
+    Write-Host "`nPlayIt: not found, skipping" -ForegroundColor Yellow
 }
 
 # ----- Summary -----
 Write-Host "`n=== All services started! ===" -ForegroundColor Green
+
+# ----- Start Watchdog -----
+# Kill any existing watchdog process first
+Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ProcessName -eq 'powershell' -and $_.Id -ne $PID
+} | ForEach-Object {
+    try {
+        $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine
+        if ($cmdLine -and $cmdLine -match 'watchdog\.ps1') {
+            Write-Host "  Stopping old watchdog PID $($_.Id)..." -ForegroundColor Yellow
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+
+$watchdogScript = Join-Path $BASE_DIR "watchdog.ps1"
+if (Test-Path $watchdogScript) {
+    Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdogScript`"" -WindowStyle Hidden
+    Write-Host "`nWatchdog started (checks every 30s, auto-restarts on failure)" -ForegroundColor Green
+}
 
 Write-Host "`nLocal URLs:" -ForegroundColor Cyan
 Write-Host "  Frontend:       http://localhost:3001"
