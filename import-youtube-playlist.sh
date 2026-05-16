@@ -10,7 +10,7 @@ ALCHEMY_API="http://localhost:8080"
 USERNAME="zx"
 PASSWORD="zx"
 PLAYLIST_URL="$1"
-COOKIES_FILE="/home/alex/Documents/lexicon/Lexicon/full-back-end-server/lexiconServer/cookies.txt"
+COOKIES_FILE="/home/alex/Documents/full-back-end-server/cookies.txt"
 
 # Colors
 GREEN='\033[0;32m'

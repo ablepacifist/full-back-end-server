@@ -584,7 +584,7 @@ Upload a single chunk.
 **Request (multipart/form-data):**
 - `chunkNumber` (integer): Chunk number (0-indexed)
 - `chunk` (file): Chunk binary data
-- `checksum` (string, optional): Chunk checksum
+- `checksum` (string, optional): Chunk checksum (SHA-256 hex)
 
 **Response (200):**
 ```json
@@ -681,13 +681,24 @@ Finalize upload and create MediaFile.
 }
 ```
 
+**Response (200, still assembling):**
+```json
+{
+  "success": false,
+  "status": "assembling",
+  "message": "File is still being assembled, please retry finalize shortly"
+}
+```
+
 **Errors:**
 - `400 Bad Request`: Upload not complete or already finalized
 - `500 Internal Server Error`: Finalization failed
 
 **Notes:**
 - This is called automatically when all chunks are uploaded
-- Waits for assembly to complete (up to 5 minutes for large files)
+- Finalize may return `status=assembling` while background assembly continues
+- Clients should poll finalize every few seconds until `success=true`
+- Server-side wait is bounded to avoid proxy timeouts
 - Creates the final MediaFile in database
 
 ---
