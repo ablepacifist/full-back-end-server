@@ -1,31 +1,29 @@
 # Lexicon Storage Architecture
 
-## Current Storage Issues
-- Files stored in database (HSQLDB) - inefficient for large files
-- No file organization by type/size
-- No progress bars for large uploads
-- Potential lag for video streaming from database
+## Current Deployment (May 2026)
+- **Host:** Windows 11 PC
+- **Storage:** 500GB ext4 USB HDD mounted via WSL2
+- **Path (Windows):** `\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage`
+- **Path (WSL):** `/mnt/wsl/PHYSICALDRIVE1p2/lexicon-storage`
+- **Mount command:** `wsl --mount \\.\PHYSICALDRIVE1 --partition 2 --type ext4`
+- **Network access:** Cloudflare Tunnel (alex-dyakin.com)
+- **Media streaming:** HTTP 200 (full file) or HTTP 206 (range requests)
+- **Chunked uploads:** SHA-256 checksums, async assembly, hourly orphan cleanup
 
-## Optimized Storage Solution
-
-### 1. File System Storage Structure
+## File System Storage Structure
 ```
-/media/alexpdyak32/7db05fe3-9f6a-46cb-82dd-8ff00d8488a0/lexicon-storage/
-├── audiobooks/
-│   ├── large/          # > 100MB audiobooks
-│   └── standard/       # < 100MB audiobooks  
+/mnt/wsl/PHYSICALDRIVE1p2/lexicon-storage/
+├── audiobooks/         # Audiobook files (~42 GB)
 ├── music/
-│   ├── lossless/       # FLAC, high-quality files
-│   └── compressed/     # MP3, AAC files
+│   └── original/       # All music files (~2.5 GB)
 ├── videos/
-│   ├── original/       # Original uploaded videos
-│   ├── transcoded/     # Optimized for streaming
-│   └── thumbnails/     # Video preview thumbnails
+│   └── original/       # All video files (~234 GB)
+├── chat-uploads/       # Rich media chat attachments
 ├── temp/
-│   ├── chunks/         # Chunked upload temporary storage
-│   ├── processing/     # Files being processed/transcoded
-│   └── cache/          # Streaming cache for frequently accessed files
-└── backups/           # Automated backup storage
+│   ├── chunks/         # Chunked upload temporary storage (auto-cleaned hourly)
+│   ├── processing/     # Files being processed
+│   └── cache/          # Streaming cache
+└── backups/            # Automated backup storage
 ```
 
 ### 2. Storage Optimization Strategy

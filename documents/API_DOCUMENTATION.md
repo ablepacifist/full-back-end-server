@@ -1,16 +1,19 @@
 # Lexicon Server API Documentation
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Base URL (Frontend):** `https://alex-dyakin.com`  
 **Base URL (Direct API):** `https://api.alex-dyakin.com` (production) or `http://localhost:36568` (local)  
-**Last Updated:** December 22, 2026 (Cloudflare HTTPS Deployment v2)
+**Last Updated:** May 25, 2026 (Windows deployment, audio streaming fixes)
 
 ## Environment Info
-- **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel
-- **Lexicon API:** Port 36568 (localhost) / Port 15856 (PlayIt tunnel)
-- **Alchemy API:** Port 8080 (localhost) / Port 15821 (PlayIt tunnel)
+- **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel (port 3001)
+- **Lexicon API:** Port 36568 via https://api.alex-dyakin.com (Cloudflare Tunnel)
+- **Alchemy API:** Port 8080 via https://alchemy.alex-dyakin.com (Cloudflare Tunnel)
+- **Database:** HSQLDB 2.7.4 on port 9002
+- **Host OS:** Windows 11 with WSL2 (ext4 USB HDD for media storage)
 - **Authentication:** HTTP session-based with JSESSIONID cookie
-- **CORS:** Configured for alex-dyakin.com and PlayIt origins
+- **CORS:** Configured for alex-dyakin.com, PlayIt origins, and localhost
+- **Media Storage:** `\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage`
 
 ## Table of Contents
 1. [Authentication & Security](#authentication--security)
