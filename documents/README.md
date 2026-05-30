@@ -26,15 +26,6 @@ full-back-end-server/
 
 All services share the same HSQLDB database for unified user management.
 
-## Key Features
-- Audio/video streaming with HTTP range requests
-- Chunked file uploads (SHA-256 verified, async assembly)
-- Auto-retry audio playback with Bluetooth recovery
-- Lock screen media controls (Media Session API)
-- Live streaming (audio + video)
-- Playlist management
-- Audiobook player with position tracking
-- Rich media chat
 
 ---
 
