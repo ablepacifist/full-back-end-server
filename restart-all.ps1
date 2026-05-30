@@ -42,16 +42,31 @@ Start-Sleep -Seconds 3
 $logsDir = Join-Path $BASE_DIR "logs"
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 
+# ----- Start WSL and keep it alive (Java needs it for UNC path resolution) -----
+Write-Host "`nEnsuring WSL Ubuntu is running..." -ForegroundColor Cyan
+# Shutdown first to clear stale state, then start fresh
+wsl --shutdown 2>$null
+Start-Sleep -Seconds 2
+Start-Process wsl -ArgumentList "-d","Ubuntu","--","sleep","infinity" -WindowStyle Hidden
+Start-Sleep -Seconds 3
+$wslCheck = wsl -d Ubuntu -e bash -c "echo OK" 2>&1
+if ($wslCheck -match "OK") {
+    Write-Host "  WSL Ubuntu active" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: WSL Ubuntu may not be running!" -ForegroundColor Red
+}
+
 # ----- Mount ext4 HDD via WSL (if not already mounted) -----
 $hddPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage"
 if (-not (Test-Path $hddPath)) {
-    Write-Host "`nMounting ext4 HDD via WSL..." -ForegroundColor Cyan
-    $mountResult = Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE1", "--partition", "2", "--type", "ext4" -Verb RunAs -Wait -PassThru
+    Write-Host "`nMounting ext4 HDD..." -ForegroundColor Cyan
+    # Use wsl --mount (handles device letter changes between reboots)
+    Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE1", "--partition", "2", "--type", "ext4" -Verb RunAs -Wait -PassThru
     Start-Sleep -Seconds 3
     if (Test-Path $hddPath) {
         Write-Host "  ext4 HDD mounted successfully" -ForegroundColor Green
     } else {
-        Write-Host "  WARNING: ext4 HDD mount may have failed!" -ForegroundColor Red
+        Write-Host "  WARNING: ext4 HDD mount FAILED! Storage features will not work." -ForegroundColor Red
     }
 } else {
     Write-Host "`next4 HDD already mounted" -ForegroundColor Green

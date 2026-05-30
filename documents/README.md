@@ -1,27 +1,40 @@
-# Full Stack Backend Server - Production Deployment Guide
+# Full Stack Backend Server
 
-This workspace contains multiple interconnected services that work together to provide a complete backend solution with media sharing capabilities.
+Personal media server with audio/video streaming, chat, and file management.
 
 ## Repository Structure
 
 ```
 full-back-end-server/
 ├── lexiconServer/       # Media sharing server (Port 36568)
-├── alchemyServer/       # Main API server (Port 8080)
-│   └── alchemy-ui/      # Alchemy frontend (Port 3000)
-├── Lexicon/             # Lexicon frontend (Port 3001)
-└── README.md            # This file
+├── alchemyServer/       # Auth/game API server (Port 8080)
+├── Lexicon/             # React frontend (Port 3001)
+├── documents/           # All documentation
+├── restart-all.ps1      # Windows service restart script
+├── watchdog.ps1         # Service health monitor
+└── db-backup/           # Database backup scripts
 ```
 
 ## Architecture Overview
 
-- **HSQLDB**: Shared database server (Port 9002)
-- **alchemyServer**: Main REST API with user authentication
-- **lexiconServer**: Media file management and sharing platform
-- **Alchemy UI**: React frontend for alchemy features
-- **Lexicon UI**: React frontend for media management
+- **HSQLDB 2.7.4**: Shared database server (Port 9002)
+- **alchemyServer**: Authentication, user management (Spring Boot, Port 8080)
+- **lexiconServer**: Media streaming, uploads, playlists, chat (Spring Boot, Port 36568)
+- **Lexicon UI**: React frontend — audio/video player, upload, chat (Port 3001)
+- **Cloudflare Tunnel**: Public access via alex-dyakin.com / api.alex-dyakin.com
+- **Storage**: 500GB ext4 USB HDD via WSL2 mount
 
 All services share the same HSQLDB database for unified user management.
+
+## Key Features
+- Audio/video streaming with HTTP range requests
+- Chunked file uploads (SHA-256 verified, async assembly)
+- Auto-retry audio playback with Bluetooth recovery
+- Lock screen media controls (Media Session API)
+- Live streaming (audio + video)
+- Playlist management
+- Audiobook player with position tracking
+- Rich media chat
 
 ---
 

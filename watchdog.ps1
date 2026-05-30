@@ -31,6 +31,29 @@ while ($true) {
         $needsRestart = $true
     }
 
+    # Check WSL is alive (Java needs it for UNC path resolution)
+    $wslRunning = wsl -d Ubuntu -e bash -c "echo OK" 2>&1
+    if ($wslRunning -notmatch "OK") {
+        Write-Log "ALERT: WSL Ubuntu not running - restarting"
+        wsl --shutdown 2>$null
+        Start-Sleep 2
+        Start-Process wsl -ArgumentList "-d","Ubuntu","--","sleep","infinity" -WindowStyle Hidden
+        Start-Sleep -Seconds 3
+        Write-Log "WSL Ubuntu restarted"
+    }
+
+    # Check HDD mount (may be lost after WSL restart)
+    if (-not (Test-Path $hddPath)) {
+        Write-Log "ALERT: HDD not accessible - remounting via wsl --mount"
+        Start-Process -FilePath "wsl" -ArgumentList "--mount","\\.\PHYSICALDRIVE1","--partition","2","--type","ext4" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+        Start-Sleep 3
+        if (Test-Path $hddPath) {
+            Write-Log "HDD remounted successfully"
+        } else {
+            Write-Log "WARNING: HDD remount failed"
+        }
+    }
+
     # Check Cloudflare Tunnel (Windows Service)
     $cfService = Get-Service -Name "Cloudflared" -ErrorAction SilentlyContinue
     if ($cfService -and $cfService.Status -ne 'Running') {
