@@ -1,9 +1,9 @@
 # Lexicon Server API Documentation
 
-**Version:** 2.1  
+**Version:** 2.2  
 **Base URL (Frontend):** `https://alex-dyakin.com`  
 **Base URL (Direct API):** `https://api.alex-dyakin.com` (production) or `http://localhost:36568` (local)  
-**Last Updated:** May 30, 2026 (direct links + Web Push endpoints)
+**Last Updated:** May 30, 2026 (Web Push + SSO token endpoints)
 
 ## Environment Info
 - **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel (port 3001)
@@ -31,7 +31,8 @@
 13. [Chat Files (Rich Media Chat)](#chat-files-rich-media-chat)
 14. [Text Messages](#text-messages)
 15. [Push Notifications (Web Push)](#push-notifications-web-push)
-16. [Data Models](#data-models)
+16. [SSO Tokens (Lexicon -> Voice Bridge)](#sso-tokens-lexicon---voice-bridge)
+17. [Data Models](#data-models)
 
 ---
 
@@ -219,6 +220,63 @@ Invalidate current session.
   "message": "Logged out successfully"
 }
 ```
+
+---
+
+## SSO Tokens (Lexicon -> Voice Bridge)
+
+Base Path: `/api/auth/sso`
+
+**Use Case:** Single sign-on handoff from Lexicon frontend to `https://voice.alex-dyakin.com`.
+Tokens are short-lived (60 seconds) and single-use.
+
+### POST /api/auth/sso/generate-token
+Generate an SSO token for the currently authenticated session user.
+
+**Auth Required:** Yes (valid `JSESSIONID` session)
+
+**Request:** No body
+
+**Response (200):**
+```json
+{
+  "token": "base64url-token",
+  "expiresInSeconds": 60
+}
+```
+
+**Errors:**
+- `401 Unauthorized`: No authenticated session
+
+---
+
+### POST /api/auth/sso/validate-token
+Validate and consume an SSO token. This endpoint is intended for bridge service server-to-server validation.
+
+**Request:**
+```json
+{
+  "token": "base64url-token"
+}
+```
+
+**Response (200):**
+```json
+{
+  "valid": true,
+  "userId": 7,
+  "username": "alex",
+  "displayName": "Alex"
+}
+```
+
+**Errors:**
+- `400 Bad Request`: Missing token
+- `401 Unauthorized`: Invalid, expired, or already-used token
+
+**Notes:**
+- Token is deleted after validation attempt (single-use)
+- Expiration is 60 seconds from generation
 
 ---
 
@@ -2143,13 +2201,19 @@ allowedOriginPatterns.add("https://your-domain\.com");
 - Voice/bridge services can trigger push via `/api/push/send` or `/api/push/send-bulk`
 - Push payloads are encrypted before delivery
 
-### 8. Database Communication
+### 8. SSO Handoff to Voice
+- Generate handoff token with `/api/auth/sso/generate-token` using active Lexicon session cookie
+- Redirect users to `https://voice.alex-dyakin.com?token=...`
+- Bridge validates token once via `/api/auth/sso/validate-token`
+- Treat tokens as one-time credentials and never store them long-term
+
+### 9. Database Communication
 - No direct database access between microservices
 - All communication via HTTP REST API
 - Use appropriate endpoints for CRUD operations
 - Implement retry logic for network failures
 
-### 9. Error Handling
+### 10. Error Handling
 ```javascript
 const response = await fetch(url, options);
 if (!response.ok) {
@@ -2159,7 +2223,7 @@ if (!response.ok) {
 }
 ```
 
-### 10. Performance Tips
+### 11. Performance Tips
 - Poll `/api/download-queue/status/{jobId}` at reasonable intervals (5-10 seconds)
 - Cache media file metadata to reduce API calls
 - Use SSE for real-time updates instead of polling
@@ -2229,6 +2293,19 @@ curl -X POST https://api.alex-dyakin.com/api/push/send \
     "body": "You have a new message",
     "url": "https://voice.alex-dyakin.com"
   }'
+```
+
+**Generate SSO Token (requires authenticated Lexicon session):**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/auth/sso/generate-token \
+  -b cookies.txt
+```
+
+**Validate SSO Token (bridge server-to-server call):**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/auth/sso/validate-token \
+  -H "Content-Type: application/json" \
+  -d '{"token":"base64url-token"}'
 ```
 
 **Get Current User:**

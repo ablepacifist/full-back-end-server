@@ -26,8 +26,6 @@ full-back-end-server/
 
 All services share the same HSQLDB database for unified user management.
 
-<<<<<<< Updated upstream
-=======
 ## Key Features
 - Audio/video streaming with HTTP range requests
 - Chunked file uploads (SHA-256 verified, async assembly)
@@ -39,8 +37,9 @@ All services share the same HSQLDB database for unified user management.
 - Audiobook player with position tracking
 - Auth-gated deep links for tracks/videos/audiobooks/playlists
 - Web Push notification backend endpoints (`/api/push/*`) for offline DM/mention alerts
+- SSO handoff endpoints (`/api/auth/sso/*`) for Lexicon -> Voice authentication
+- Voice Chat entry in Lexicon UI (Navbar + App Selector) with SSO redirect
 - Rich media chat
->>>>>>> Stashed changes
 
 ---
 

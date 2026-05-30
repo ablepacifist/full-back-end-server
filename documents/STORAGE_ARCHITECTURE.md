@@ -10,6 +10,7 @@
 - **Media streaming:** HTTP 200 (full file) or HTTP 206 (range requests)
 - **Chunked uploads:** SHA-256 checksums, async assembly, hourly orphan cleanup
 - **Push subscriptions:** Stored in HSQLDB (`push_subscriptions` table)
+- **SSO tokens:** Stored in HSQLDB (`sso_tokens` table, single-use, 60s expiry)
 
 ## File System Storage Structure
 ```
@@ -151,6 +152,7 @@ The current schema includes:
 - `chat_files` (rich chat uploads)
 - `playback_positions` (audiobook/player resume data)
 - `push_subscriptions` (Web Push endpoint + keys per user)
+- `sso_tokens` (Lexicon -> Voice bridge handoff tokens)
 
 ### push_subscriptions Table
 - `id` (identity primary key)
@@ -164,3 +166,14 @@ The current schema includes:
 Notes:
 - Subscriptions are upserted by endpoint (`MERGE` in HSQL layer)
 - Stale subscriptions are removed automatically on push send failures (HTTP 404/410)
+
+### sso_tokens Table
+- `id` (identity primary key)
+- `user_id` (int)
+- `token_hash` (SHA-256 hash of the raw token)
+- `expires_at` timestamp (60 second validity window)
+- `created_at` timestamp
+
+Notes:
+- Tokens are single-use and deleted on validation attempt
+- Bridge validates via `/api/auth/sso/validate-token`
