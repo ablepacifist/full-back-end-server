@@ -26,6 +26,21 @@ full-back-end-server/
 
 All services share the same HSQLDB database for unified user management.
 
+<<<<<<< Updated upstream
+=======
+## Key Features
+- Audio/video streaming with HTTP range requests
+- Chunked file uploads (SHA-256 verified, async assembly)
+- Auto-retry audio playback with Bluetooth recovery
+- Next-track prefetch for locked-phone playback resilience
+- Lock screen media controls (Media Session API)
+- Live streaming (audio + video)
+- Playlist management
+- Audiobook player with position tracking
+- Auth-gated deep links for tracks/videos/audiobooks/playlists
+- Web Push notification backend endpoints (`/api/push/*`) for offline DM/mention alerts
+- Rich media chat
+>>>>>>> Stashed changes
 
 ---
 
@@ -102,6 +117,11 @@ DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
 
 # yt-dlp cookies (optional, for age-restricted content)
 YTDLP_COOKIES_PATH=./cookies.txt
+
+# Web Push (VAPID)
+VAPID_PUBLIC_KEY=BLOnJPlh4qyMxl1N2Yw2jmYUkmASl8FZ9HBE3EqZXOn6BcexT4fsOhWXx5cp_hWr3bwwoGRuWR9owjI68UP43Ec
+VAPID_PRIVATE_KEY=8k7ZFu7u-wGdv3hvUZ-vgVh46q_J_BEM0GvusTPbCD0
+VAPID_SUBJECT=mailto:admin@alex-dyakin.com
 ```
 
 **Note on file sizes**: The MAX_FILE_SIZE uses BLOB storage which is **dynamic** - a 10MB file takes 10MB, a 1.5GB file takes 1.5GB. No wasted space!

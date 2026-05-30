@@ -9,6 +9,7 @@
 - **Network access:** Cloudflare Tunnel (alex-dyakin.com)
 - **Media streaming:** HTTP 200 (full file) or HTTP 206 (range requests)
 - **Chunked uploads:** SHA-256 checksums, async assembly, hourly orphan cleanup
+- **Push subscriptions:** Stored in HSQLDB (`push_subscriptions` table)
 
 ## File System Storage Structure
 ```
@@ -139,3 +140,27 @@ This architecture will provide:
 - **Enhanced user experience** with progress tracking
 - **Scalability** for future growth
 - **Efficient use** of your 500GB storage volume
+
+---
+
+## Current Database Tables (Storage-Relevant)
+
+The current schema includes:
+- `media_files` (metadata)
+- `file_data` (blob storage for media bytes)
+- `chat_files` (rich chat uploads)
+- `playback_positions` (audiobook/player resume data)
+- `push_subscriptions` (Web Push endpoint + keys per user)
+
+### push_subscriptions Table
+- `id` (identity primary key)
+- `user_id` (int)
+- `endpoint` (unique)
+- `p256dh` (client public key)
+- `auth` (client auth secret)
+- `user_agent` (optional)
+- `created_at` timestamp
+
+Notes:
+- Subscriptions are upserted by endpoint (`MERGE` in HSQL layer)
+- Stale subscriptions are removed automatically on push send failures (HTTP 404/410)

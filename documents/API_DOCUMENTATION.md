@@ -1,9 +1,9 @@
 # Lexicon Server API Documentation
 
-**Version:** 2.0  
+**Version:** 2.1  
 **Base URL (Frontend):** `https://alex-dyakin.com`  
 **Base URL (Direct API):** `https://api.alex-dyakin.com` (production) or `http://localhost:36568` (local)  
-**Last Updated:** May 25, 2026 (Windows deployment, audio streaming fixes)
+**Last Updated:** May 30, 2026 (direct links + Web Push endpoints)
 
 ## Environment Info
 - **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel (port 3001)
@@ -30,7 +30,8 @@
 12. [Media Streaming](#media-streaming)
 13. [Chat Files (Rich Media Chat)](#chat-files-rich-media-chat)
 14. [Text Messages](#text-messages)
-15. [Data Models](#data-models)
+15. [Push Notifications (Web Push)](#push-notifications-web-push)
+16. [Data Models](#data-models)
 
 ---
 
@@ -1726,6 +1727,126 @@ Search messages by content.
 
 ---
 
+## Push Notifications (Web Push)
+
+Base Path: `/api/push`
+
+**Use Case:** Register browser push subscriptions and send encrypted push notifications to offline users.
+
+**Security/Architecture Notes:**
+- API layer (`PushNotificationController`) delegates to logic layer (`PushNotificationService`)
+- Logic layer handles payload creation, VAPID auth, ECDH, and AES-128-GCM encryption
+- Data layer persists subscriptions via `IPushSubscriptionDatabase`/`HSQLPushSubscriptionDatabase`
+- Payloads are encrypted per RFC 8291 before delivery
+
+### GET /api/push/vapid-key
+Get VAPID public key used by browser clients when calling `PushManager.subscribe()`.
+
+**Response (200):**
+```json
+{
+  "publicKey": "BLOnJPlh4qyMxl1N2Yw2jmYUkmASl8FZ9HBE3EqZXOn6BcexT4fsOhWXx5cp_hWr3bwwoGRuWR9owjI68UP43Ec"
+}
+```
+
+**Errors:**
+- `503 Service Unavailable`: Push is not configured (missing VAPID keys)
+
+---
+
+### POST /api/push/subscribe
+Register or update a device push subscription.
+
+**Request Body:**
+```json
+{
+  "userId": 7,
+  "endpoint": "https://fcm.googleapis.com/fcm/send/abcdef...",
+  "keys": {
+    "p256dh": "base64url-key",
+    "auth": "base64url-auth"
+  },
+  "userAgent": "Mozilla/5.0 ..."
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Push subscription registered"
+}
+```
+
+---
+
+### POST /api/push/unsubscribe
+Remove a device push subscription.
+
+**Request Body:**
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/abcdef..."
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Push subscription removed"
+}
+```
+
+---
+
+### POST /api/push/send
+Send an encrypted push notification to one user.
+
+**Request Body:**
+```json
+{
+  "userId": 7,
+  "title": "New message",
+  "body": "You have a new DM",
+  "url": "https://voice.alex-dyakin.com/dm/7",
+  "data": { "channelId": 10 }
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "sent": 1
+}
+```
+
+---
+
+### POST /api/push/send-bulk
+Send an encrypted push notification to multiple users.
+
+**Request Body:**
+```json
+{
+  "userIds": [7, 8, 9],
+  "title": "Channel mention",
+  "body": "You were mentioned",
+  "url": "https://voice.alex-dyakin.com/channels/42"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "sent": 2
+}
+```
+
+---
+
 ## Data Models
 
 ### Player / User
@@ -2016,13 +2137,19 @@ allowedOriginPatterns.add("https://your-domain\.com");
 - Use `/api/stream/{mediaFileId}` for enhanced streaming with range support
 - Always check `Accept-Ranges` and `Content-Range` headers for seeking
 
-### 7. Database Communication
+### 7. Push Notifications
+- Use `/api/push/vapid-key` to bootstrap browser subscription
+- Register device subscription via `/api/push/subscribe`
+- Voice/bridge services can trigger push via `/api/push/send` or `/api/push/send-bulk`
+- Push payloads are encrypted before delivery
+
+### 8. Database Communication
 - No direct database access between microservices
 - All communication via HTTP REST API
 - Use appropriate endpoints for CRUD operations
 - Implement retry logic for network failures
 
-### 8. Error Handling
+### 9. Error Handling
 ```javascript
 const response = await fetch(url, options);
 if (!response.ok) {
@@ -2032,7 +2159,7 @@ if (!response.ok) {
 }
 ```
 
-### 9. Performance Tips
+### 10. Performance Tips
 - Poll `/api/download-queue/status/{jobId}` at reasonable intervals (5-10 seconds)
 - Cache media file metadata to reduce API calls
 - Use SSE for real-time updates instead of polling
@@ -2073,6 +2200,35 @@ curl -X POST http://localhost:36568/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"test","password":"test"}' \
   -c cookies.txt
+```
+
+**Get VAPID Public Key:**
+```bash
+curl https://api.alex-dyakin.com/api/push/vapid-key
+```
+
+**Register Push Subscription:**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/push/subscribe \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": 7,
+    "endpoint": "https://fcm.googleapis.com/fcm/send/example",
+    "keys": {"p256dh": "key", "auth": "auth"},
+    "userAgent": "Mozilla/5.0"
+  }'
+```
+
+**Send Push Notification:**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/push/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": 7,
+    "title": "New DM",
+    "body": "You have a new message",
+    "url": "https://voice.alex-dyakin.com"
+  }'
 ```
 
 **Get Current User:**
