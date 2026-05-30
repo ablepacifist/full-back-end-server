@@ -118,9 +118,9 @@ DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
 # yt-dlp cookies (optional, for age-restricted content)
 YTDLP_COOKIES_PATH=./cookies.txt
 
-# Web Push (VAPID)
-VAPID_PUBLIC_KEY=BLOnJPlh4qyMxl1N2Yw2jmYUkmASl8FZ9HBE3EqZXOn6BcexT4fsOhWXx5cp_hWr3bwwoGRuWR9owjI68UP43Ec
-VAPID_PRIVATE_KEY=8k7ZFu7u-wGdv3hvUZ-vgVh46q_J_BEM0GvusTPbCD0
+# Web Push (VAPID) — generate with: npx web-push generate-vapid-keys --json
+VAPID_PUBLIC_KEY=<your-generated-public-key>
+VAPID_PRIVATE_KEY=<your-generated-private-key>
 VAPID_SUBJECT=mailto:admin@alex-dyakin.com
 ```
 

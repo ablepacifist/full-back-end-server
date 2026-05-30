@@ -113,8 +113,18 @@ if ($alchemyCheck) {
 # ----- Start LexiconServer -----
 Write-Host "`nStarting LexiconServer..." -ForegroundColor Cyan
 $lexiconLog = Join-Path $logsDir "lexicon.log"
+
+# Load .env file for VAPID keys and other secrets
+$envFile = Join-Path $BASE_DIR ".env"
+$envVars = ""
+if (Test-Path $envFile) {
+    Get-Content $envFile | Where-Object { $_ -match '^\s*[^#]' -and $_ -match '=' } | ForEach-Object {
+        $envVars += "set $($_)&& "
+    }
+}
+
 Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c `"set JAVA_HOME=$env:JAVA_HOME&& cd /d $BASE_DIR\lexiconServer && gradlew.bat bootRun > `"$lexiconLog`" 2>&1`"" `
+    -ArgumentList "/c `"set JAVA_HOME=$env:JAVA_HOME&& ${envVars}cd /d $BASE_DIR\lexiconServer && gradlew.bat bootRun > `"$lexiconLog`" 2>&1`"" `
     -WindowStyle Hidden
 
 Write-Host "  Waiting for LexiconServer to start..." -ForegroundColor Gray
