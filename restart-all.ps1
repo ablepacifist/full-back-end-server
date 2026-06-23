@@ -25,7 +25,7 @@ Get-Process -Name "java" -ErrorAction SilentlyContinue | ForEach-Object {
 }
 
 # Kill node/serve processes on our ports
-$ports = @(3001, 8080, 36568, 9002)
+$ports = @(3001, 8080, 8090, 36568, 9002)
 foreach ($port in $ports) {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conn) {
@@ -137,6 +137,60 @@ if ($lexiconCheck) {
     Write-Host "  WARNING: LexiconServer may still be starting (check logs\lexicon.log)" -ForegroundColor Yellow
 }
 
+# ----- Start PokemonServer -----
+Write-Host "`nStarting PokemonServer..." -ForegroundColor Cyan
+$pokemonLog  = Join-Path $logsDir "pokemon.log"
+$pokemonJar  = Join-Path $BASE_DIR "pokemon\pokemon\pokemonServer\build\libs\pokemonServer-1.0.0.jar"
+$pokemonSrc  = Join-Path $BASE_DIR "pokemon\pokemon\pokemonServer\src"
+$pokemonBuild = Join-Path $BASE_DIR "pokemon\pokemon\pokemonServer"
+
+$rebuildNeeded = $false
+if (-not (Test-Path $pokemonJar)) {
+    $rebuildNeeded = $true
+    Write-Host "  No JAR found - building..." -ForegroundColor Yellow
+} else {
+    $jarTime = (Get-Item $pokemonJar).LastWriteTime
+    $newerFile = Get-ChildItem -Path $pokemonSrc -Recurse -Include "*.java","*.properties" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt $jarTime } | Select-Object -First 1
+    if ($newerFile) {
+        $rebuildNeeded = $true
+        Write-Host "  Source changes detected ($($newerFile.Name)) - rebuilding JAR..." -ForegroundColor Yellow
+        Remove-Item $pokemonJar -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if ($rebuildNeeded) {
+    Push-Location $pokemonBuild
+    & ".\gradlew.bat" build 2>&1 | Out-Null
+    Pop-Location
+    if (Test-Path $pokemonJar) {
+        Write-Host "  JAR built successfully" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: JAR build may have failed - check source for errors" -ForegroundColor Red
+    }
+}
+$pokemonEnvVars = @{}
+if (Test-Path $envFile) {
+    Get-Content $envFile | Where-Object { $_ -match '^\s*[^#]' -and $_ -match '=' } | ForEach-Object {
+        $parts = $_ -split '=', 2
+        if ($parts.Length -eq 2) { $pokemonEnvVars[$parts[0].Trim()] = $parts[1].Trim() }
+    }
+}
+$pokemonEnvStr = ($pokemonEnvVars.GetEnumerator() | ForEach-Object { "set $($_.Key)=$($_.Value)&&" }) -join ' '
+Start-Process -FilePath "cmd.exe" `
+    -ArgumentList "/c `"${pokemonEnvStr}java -jar `"$pokemonJar`" > `"$pokemonLog`" 2>&1`"" `
+    -WindowStyle Hidden
+
+Write-Host "  Waiting for PokemonServer to start..." -ForegroundColor Gray
+for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort 8090 -State Listen -ErrorAction SilentlyContinue) { break } }
+
+$pokemonCheck = Get-NetTCPConnection -LocalPort 8090 -State Listen -ErrorAction SilentlyContinue
+if ($pokemonCheck) {
+    Write-Host "  PokemonServer started on port 8090" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: PokemonServer may still be starting (check logs\pokemon.log)" -ForegroundColor Yellow
+}
+
 # ----- Start Frontend -----
 Write-Host "`nStarting Frontend..." -ForegroundColor Cyan
 $frontendDir = Join-Path $BASE_DIR "Lexicon"
@@ -167,6 +221,16 @@ if ($frontendCheck) {
 $cfService = Get-Service -Name "Cloudflared" -ErrorAction SilentlyContinue
 if ($cfService) {
     Write-Host "`nRestarting Cloudflare Tunnel service..." -ForegroundColor Cyan
+
+    # The service runs as LocalSystem and reads config from the system profile.
+    # Sync our user-profile config into that location every restart so changes stick.
+    $userCfConfig = "C:\Users\HP\.cloudflared\config.yml"
+    $sysCfConfig  = "C:\Windows\System32\config\systemprofile\.cloudflared\config.yml"
+    if (Test-Path $userCfConfig) {
+        Start-Process powershell -ArgumentList "-Command",("Copy-Item '$userCfConfig' '$sysCfConfig' -Force") -Verb RunAs -Wait -ErrorAction SilentlyContinue
+        Write-Host "  Synced cloudflared config to LocalSystem profile" -ForegroundColor Gray
+    }
+
     if ($cfService.Status -ne 'Stopped') {
         Start-Process sc.exe -ArgumentList "stop","Cloudflared" -Verb RunAs -Wait -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 3
@@ -229,6 +293,7 @@ Write-Host "`nLocal URLs:" -ForegroundColor Cyan
 Write-Host "  Frontend:       http://localhost:3001"
 Write-Host "  AlchemyServer:  http://localhost:8080"
 Write-Host "  LexiconServer:  http://localhost:36568"
+Write-Host "  PokemonServer:  http://localhost:8090"
 Write-Host "  Database:       localhost:9002"
 
 Write-Host "`nExternal URLs:" -ForegroundColor Cyan

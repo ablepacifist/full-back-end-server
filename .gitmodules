@@ -10,3 +10,7 @@
 	path = alchemyServer
 	url = https://github.com/ablepacifist/alchemyServer.git
 	branch = main
+[submodule "pokemon/pokemon"]
+	path = pokemon/pokemon
+	url = git@github.com:ablepacifist/pokemon.git
+	branch = dev
