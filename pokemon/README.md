@@ -40,16 +40,33 @@ pokemon/
   pokemonServer/              Spring Boot API (port 8090)
     src/main/java/pokemon/
       api/                    REST controllers (zero logic)
-      logic/                  All game logic (catch, leveling, moves)
+      logic/                  All game logic (catch, leveling, moves, evolution)
       data/                   Database layer
       object/                 Data models
     src/main/resources/
       species.csv             151 Gen 1 Pokemon with base stats
       moves.csv               165 Gen 1 moves
       learnsets.csv           Level-up movesets for all 151 Pokemon
+      evolutions.csv          Gen 1 evolution chains (level + stone-based)
       application.properties
-  pogo_assets/                Sprites and game assets
+  pogo_assets/                Sprites and game assets (not tracked in git)
+    Images/                   Pokemon sprites served at /api/pokemon/sprites/
+    Sounds/                   Sound effects
+    3D Assets/                3D models for CatchScreen
 ```
+
+## Assets
+
+Sprites and other game assets live in `pogo_assets/` (excluded from git via `.gitignore`).
+The server serves them as static resources — `pokemonServer` maps `/api/pokemon/sprites/{filename}`
+to the `pogo_assets/Images/` directory via `application.properties`:
+
+```properties
+pokemon.assets.sprites=../pogo_assets/Images
+```
+
+When deploying to a new machine, copy the `pogo_assets/` folder from the original install
+alongside the `pokemon/` directory.
 
 ---
 
