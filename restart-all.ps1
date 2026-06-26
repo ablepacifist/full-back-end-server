@@ -161,7 +161,7 @@ if (-not (Test-Path $pokemonJar)) {
 
 if ($rebuildNeeded) {
     Push-Location $pokemonBuild
-    & ".\gradlew.bat" build 2>&1 | Out-Null
+    & ".\gradlew.bat" clean build 2>&1 | Out-Null
     Pop-Location
     if (Test-Path $pokemonJar) {
         Write-Host "  JAR built successfully" -ForegroundColor Green
