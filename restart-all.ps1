@@ -56,20 +56,36 @@ if ($wslCheck -match "OK") {
     Write-Host "  WARNING: WSL Ubuntu may not be running!" -ForegroundColor Red
 }
 
-# ----- Mount ext4 HDD via WSL (if not already mounted) -----
-$hddPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage"
-if (-not (Test-Path $hddPath)) {
-    Write-Host "`nMounting ext4 HDD..." -ForegroundColor Cyan
-    # Use wsl --mount (handles device letter changes between reboots)
-    Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE1", "--partition", "2", "--type", "ext4" -Verb RunAs -Wait -PassThru
-    Start-Sleep -Seconds 3
-    if (Test-Path $hddPath) {
-        Write-Host "  ext4 HDD mounted successfully" -ForegroundColor Green
-    } else {
-        Write-Host "  WARNING: ext4 HDD mount FAILED! Storage features will not work." -ForegroundColor Red
+# ----- Mount all ext4 media HDDs via WSL (auto-detects any drive, any partition) -----
+Write-Host "`nScanning for ext4 media drives to mount into WSL..." -ForegroundColor Cyan
+
+$linuxDataGuid = "{0fc63daf-8483-4772-8e79-3d69d8477de4}"  # GPT "Linux filesystem data" type
+$candidateDisks = Get-Disk | Where-Object { -not $_.IsSystem }  # excludes the Windows OS disk
+
+foreach ($disk in $candidateDisks) {
+    $linuxPartitions = Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue |
+        Where-Object { $_.GptType -eq $linuxDataGuid }
+
+    if (-not $linuxPartitions) {
+        Write-Host "  Disk $($disk.Number) ($($disk.FriendlyName)): no ext4/Linux partition found, skipping" -ForegroundColor Gray
+        continue
     }
-} else {
-    Write-Host "`next4 HDD already mounted" -ForegroundColor Green
+
+    foreach ($part in $linuxPartitions) {
+        $mountPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE$($disk.Number)p$($part.PartitionNumber)"
+        if (Test-Path $mountPath) {
+            Write-Host "  Disk $($disk.Number) partition $($part.PartitionNumber) already mounted" -ForegroundColor Green
+            continue
+        }
+        Write-Host "  Mounting Disk $($disk.Number) partition $($part.PartitionNumber) (ext4)..." -ForegroundColor Cyan
+        Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE$($disk.Number)", "--partition", "$($part.PartitionNumber)", "--type", "ext4" -Verb RunAs -Wait -PassThru
+        Start-Sleep -Seconds 3
+        if (Test-Path $mountPath) {
+            Write-Host "  Mounted successfully at $mountPath" -ForegroundColor Green
+        } else {
+            Write-Host "  WARNING: mount FAILED for Disk $($disk.Number) partition $($part.PartitionNumber)" -ForegroundColor Red
+        }
+    }
 }
 
 # ----- Start HSQLDB -----
