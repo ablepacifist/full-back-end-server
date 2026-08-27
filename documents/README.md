@@ -2,6 +2,8 @@
 
 Personal media server with audio/video streaming, chat, and file management.
 
+> **Cloudflare Tunnel (`alex-dyakin.com` and its subdomains) is the primary access method.** It's an outbound-only tunnel, so it survives moving this server to a new location/ISP with zero reconfiguration — just start the `Cloudflared` service and run `restart-all.ps1`. The PlayIt.gg IP-based setup described later in this doc (Step 2 onward) is a secondary fallback only, not required for normal operation.
+
 ## Repository Structure
 
 ```
@@ -70,9 +72,9 @@ cd lexiconServer && git checkout dev && cd ..
 cd alchemyServer && git checkout dev && cd ..
 ```
 
-### Step 2: Configure Environment Variables
+### Step 2: Configure Environment Variables (PlayIt.gg fallback path — Cloudflare Tunnel is primary and needs none of this)
 
-**CRITICAL: You must use IP addresses, not PlayIt.gg hostnames for remote access!**
+**CRITICAL (for the PlayIt.gg fallback only): You must use IP addresses, not PlayIt.gg hostnames for remote access!**
 
 Both Java servers now support environment variable overrides. Create `.env` files:
 

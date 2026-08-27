@@ -16,6 +16,40 @@ function Test-Port($port) {
     return [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
 }
 
+# Auto-detects the ext4 media drive by GPT partition type GUID instead of a
+# fixed PHYSICALDRIVE/partition number, so this survives Windows re-enumerating
+# disks after the machine is physically moved/reseated (same approach as
+# restart-all.ps1's mount step).
+$linuxDataGuid = "{0fc63daf-8483-4772-8e79-3d69d8477de4}"  # GPT "Linux filesystem data" type
+
+function Find-LexiconStoragePath {
+    $candidateDisks = Get-Disk | Where-Object { -not $_.IsSystem }
+    foreach ($disk in $candidateDisks) {
+        $linuxPartitions = Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue |
+            Where-Object { $_.GptType -eq $linuxDataGuid }
+        foreach ($part in $linuxPartitions) {
+            $mountPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE$($disk.Number)p$($part.PartitionNumber)\lexicon-storage"
+            if (Test-Path $mountPath) {
+                return $mountPath
+            }
+        }
+    }
+    return $null
+}
+
+function Mount-LexiconStorageDisks {
+    $candidateDisks = Get-Disk | Where-Object { -not $_.IsSystem }
+    foreach ($disk in $candidateDisks) {
+        $linuxPartitions = Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue |
+            Where-Object { $_.GptType -eq $linuxDataGuid }
+        foreach ($part in $linuxPartitions) {
+            $mountPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE$($disk.Number)p$($part.PartitionNumber)"
+            if (Test-Path $mountPath) { continue }
+            Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE$($disk.Number)", "--partition", "$($part.PartitionNumber)", "--type", "ext4" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
 Write-Log "Watchdog started. Checking every ${checkInterval}s."
 
@@ -25,8 +59,7 @@ while ($true) {
     $needsRestart = $false
 
     # Check ext4 HDD
-    $hddPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage"
-    if (-not (Test-Path $hddPath)) {
+    if (-not (Find-LexiconStoragePath)) {
         Write-Log "ALERT: ext4 HDD not accessible - triggering full restart"
         $needsRestart = $true
     }
@@ -43,11 +76,11 @@ while ($true) {
     }
 
     # Check HDD mount (may be lost after WSL restart)
-    if (-not (Test-Path $hddPath)) {
+    if (-not (Find-LexiconStoragePath)) {
         Write-Log "ALERT: HDD not accessible - remounting via wsl --mount"
-        Start-Process -FilePath "wsl" -ArgumentList "--mount","\\.\PHYSICALDRIVE1","--partition","2","--type","ext4" -Wait -WindowStyle Hidden -ErrorAction SilentlyContinue
+        Mount-LexiconStorageDisks
         Start-Sleep 3
-        if (Test-Path $hddPath) {
+        if (Find-LexiconStoragePath) {
             Write-Log "HDD remounted successfully"
         } else {
             Write-Log "WARNING: HDD remount failed"

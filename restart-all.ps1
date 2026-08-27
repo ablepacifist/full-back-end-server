@@ -312,11 +312,16 @@ Write-Host "  LexiconServer:  http://localhost:36568"
 Write-Host "  PokemonServer:  http://localhost:8090"
 Write-Host "  Database:       localhost:9002"
 
-Write-Host "`nExternal URLs:" -ForegroundColor Cyan
-Write-Host "  Cloudflare:     https://alex-dyakin.com"
-Write-Host "  PlayIt Frontend: http://209.25.140.16:1796"
-Write-Host "  PlayIt Alchemy:  http://209.25.140.16:1760"
-Write-Host "  PlayIt Lexicon:  http://209.25.140.16:1792"
+Write-Host "`nExternal URLs (Cloudflare Tunnel - primary, works from any location):" -ForegroundColor Cyan
+Write-Host "  Frontend:       https://alex-dyakin.com"
+Write-Host "  LexiconServer:  https://api.alex-dyakin.com"
+Write-Host "  AlchemyServer:  https://alchemy.alex-dyakin.com"
+Write-Host "  PokemonServer:  https://poke.alex-dyakin.com"
+
+Write-Host "`nPlayIt fallback (secondary - IPs are tunnel-session-assigned and may be stale, especially after a move):" -ForegroundColor DarkGray
+Write-Host "  PlayIt Frontend: http://209.25.140.16:1796" -ForegroundColor DarkGray
+Write-Host "  PlayIt Alchemy:  http://209.25.140.16:1760" -ForegroundColor DarkGray
+Write-Host "  PlayIt Lexicon:  http://209.25.140.16:1792" -ForegroundColor DarkGray
 
 Write-Host "`nLogs:" -ForegroundColor Cyan
 Write-Host "  Get-Content -Wait logs\database.log"

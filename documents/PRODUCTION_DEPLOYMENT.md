@@ -1,5 +1,7 @@
 # Production Deployment Guide
 
+> **Cloudflare Tunnel is the primary access method today** — `https://alex-dyakin.com`, `api.alex-dyakin.com`, `alchemy.alex-dyakin.com`, `poke.alex-dyakin.com`. It's an outbound-only tunnel (`cloudflared` service + `restart-all.ps1`), so it works unchanged from any location/ISP with no per-location reconfiguration. Everything below this point describes the legacy PlayIt.gg IP-based setup, which is kept only as a secondary fallback — it is **not** required for the app to work.
+
 ## Prerequisites
 - playit.gg account and client installed
 - Java 21+ installed
