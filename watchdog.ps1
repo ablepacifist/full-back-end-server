@@ -116,6 +116,26 @@ while ($true) {
         }
     }
 
+    # Check Lexi (voice daemon).
+    # Restarted on its own rather than added to the port list above: those trigger a full
+    # restart-all, and taking the website, media server and tunnels down because a voice
+    # daemon died would be a far worse outage than the one being fixed.
+    $lexiPython = Join-Path $BASE_DIR "Lexi\.venv\Scripts\python.exe"
+    if ((Test-Path $lexiPython) -and -not (Test-Port 8765)) {
+        Write-Log "ALERT: Lexi not listening on port 8765 - restarting it"
+        $lexiDir = Join-Path $BASE_DIR "Lexi"
+        $lexiLog = Join-Path $logsDir "lexi.log"
+        Start-Process -FilePath "cmd.exe" `
+            -ArgumentList "/c `"cd /d $lexiDir && `"$lexiPython`" -m lexi.server --host 127.0.0.1 --port 8765 >> `"$lexiLog`" 2>&1`"" `
+            -WindowStyle Hidden -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 10
+        if (Test-Port 8765) {
+            Write-Log "Lexi restarted"
+        } else {
+            Write-Log "WARNING: Lexi still not listening after restart attempt (see logs\lexi.log)"
+        }
+    }
+
     # Check PlayIt tunnel
     $playitProc = Get-Process -Name "playit" -ErrorAction SilentlyContinue
     if (-not $playitProc) {

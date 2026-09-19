@@ -24,8 +24,8 @@ Get-Process -Name "java" -ErrorAction SilentlyContinue | ForEach-Object {
     Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
 }
 
-# Kill node/serve processes on our ports
-$ports = @(3001, 8080, 8090, 36568, 9002)
+# Kill node/serve processes on our ports (8765 is Lexi's voice daemon, a python process)
+$ports = @(3001, 8080, 8090, 36568, 9002, 8765)
 foreach ($port in $ports) {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conn) {
@@ -151,6 +151,40 @@ if ($lexiconCheck) {
     Write-Host "  LexiconServer started on port 36568" -ForegroundColor Green
 } else {
     Write-Host "  WARNING: LexiconServer may still be starting (check logs\lexicon.log)" -ForegroundColor Yellow
+}
+
+# ----- Start Lexi (voice daemon) -----
+# Turns a recorded clip into a spoken answer: speech-to-text here on aragon, the text to
+# Obrenna on alison, and the reply spoken with Piper. LexiconServer's /api/voice endpoints
+# relay to it, which is what makes the website's voice assistant page work.
+#
+# Bound to 127.0.0.1 deliberately: it is reached only through LexiconServer, which already
+# terminates TLS and checks the session. Its two secrets are read from files in the Lexi
+# directory (.agent_token, .tool_token), so nothing secret belongs in this script — which
+# is why it is started with that directory as the working directory.
+Write-Host "`nStarting Lexi (voice daemon)..." -ForegroundColor Cyan
+$lexiDir = Join-Path $BASE_DIR "Lexi"
+$lexiPython = Join-Path $lexiDir ".venv\Scripts\python.exe"
+$lexiLog = Join-Path $logsDir "lexi.log"
+
+if (Test-Path $lexiPython) {
+    Start-Process -FilePath "cmd.exe" `
+        -ArgumentList "/c `"cd /d $lexiDir && `"$lexiPython`" -m lexi.server --host 127.0.0.1 --port 8765 > `"$lexiLog`" 2>&1`"" `
+        -WindowStyle Hidden
+
+    Write-Host "  Waiting for Lexi to start..." -ForegroundColor Gray
+    for ($i = 0; $i -lt 30; $i++) { Start-Sleep 1; if (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue) { break } }
+
+    if (Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue) {
+        # The speech models load on the first request, not now, so the first voice turn
+        # after a restart is slower than the ones after it.
+        Write-Host "  Lexi started on port 8765 (localhost only)" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: Lexi did not start (check logs\lexi.log)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  Lexi: no virtualenv at Lexi\.venv, skipping" -ForegroundColor Yellow
+    Write-Host "    Create it with: cd Lexi; python -m venv .venv; .venv\Scripts\pip install -e `".[engines]`"" -ForegroundColor DarkGray
 }
 
 # ----- Start PokemonServer -----
@@ -311,6 +345,7 @@ Write-Host "  AlchemyServer:  http://localhost:8080"
 Write-Host "  LexiconServer:  http://localhost:36568"
 Write-Host "  PokemonServer:  http://localhost:8090"
 Write-Host "  Database:       localhost:9002"
+Write-Host "  Lexi (voice):   http://localhost:8765  (localhost only, reached via LexiconServer)"
 
 Write-Host "`nExternal URLs (Cloudflare Tunnel - primary, works from any location):" -ForegroundColor Cyan
 Write-Host "  Frontend:       https://alex-dyakin.com"
@@ -327,6 +362,7 @@ Write-Host "`nLogs:" -ForegroundColor Cyan
 Write-Host "  Get-Content -Wait logs\database.log"
 Write-Host "  Get-Content -Wait logs\alchemy.log"
 Write-Host "  Get-Content -Wait logs\lexicon.log"
+Write-Host "  Get-Content -Wait logs\lexi.log"
 Write-Host "  Get-Content -Wait logs\frontend.log"
 Write-Host "  Get-Content -Wait logs\cloudflared.log"
 Write-Host ""
