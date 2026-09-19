@@ -1,9 +1,9 @@
 # Lexicon Server API Documentation
 
-**Version:** 2.3  
+**Version:** 2.4  
 **Base URL (Frontend):** `https://alex-dyakin.com`  
 **Base URL (Direct API):** `https://api.alex-dyakin.com` (production) or `http://localhost:36568` (local)  
-**Last Updated:** June 13, 2026 (Holdfast Management endpoints)
+**Last Updated:** September 19, 2026 (Full endpoint audit: app update/version, avatar proxy, events & polls, notifications, voice relay, health/info, live stream channels, and Alchemy Auth/Game/Player/Potion endpoints)
 
 ## Environment Info
 - **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel (port 3001)
@@ -19,21 +19,32 @@
 1. [Authentication & Security](#authentication--security)
 2. [CORS Configuration](#cors-configuration)
 3. [Authentication Endpoints](#authentication-endpoints)
-4. [Player Management](#player-management)
-5. [Media Management](#media-management)
-6. [Chunked Upload (Large Files)](#chunked-upload-large-files)
-7. [Async Download Queue](#async-download-queue)
-8. [Playlist Management](#playlist-management)
-9. [Playback Position Tracking](#playback-position-tracking)
-10. [Live Stream](#live-stream)
-11. [Live Stream (Lightweight)](#live-stream-lightweight)
+4. [SSO Tokens (Lexicon -> Voice Bridge)](#sso-tokens-lexicon---voice-bridge)
+5. [Player Management](#player-management)
+6. [Media Management](#media-management)
+7. [Chunked Upload (Large Files)](#chunked-upload-large-files)
+8. [Async Download Queue](#async-download-queue)
+9. [Playlist Management](#playlist-management)
+10. [Playback Position Tracking](#playback-position-tracking)
+11. [Live Stream](#live-stream)
 12. [Media Streaming](#media-streaming)
 13. [Chat Files (Rich Media Chat)](#chat-files-rich-media-chat)
 14. [Text Messages](#text-messages)
 15. [Push Notifications (Web Push)](#push-notifications-web-push)
-16. [SSO Tokens (Lexicon -> Voice Bridge)](#sso-tokens-lexicon---voice-bridge)
-17. [Data Models](#data-models)
-18. [Holdfast Management (Alchemy API)](#holdfast-management-alchemy-api)
+16. [Notifications (In-App / Mumble Bridge)](#notifications-in-app--mumble-bridge)
+17. [Events & Polls](#events--polls)
+18. [Voice Relay (Lexi)](#voice-relay-lexi)
+19. [Avatar Proxy (Mumble Bridge)](#avatar-proxy-mumble-bridge)
+20. [App Version & Update](#app-version--update)
+21. [Health & Info](#health--info)
+22. [Data Models](#data-models)
+23. [Holdfast Management (Alchemy API)](#holdfast-management-alchemy-api)
+24. [Alchemy Authentication](#alchemy-authentication)
+25. [Alchemy Player](#alchemy-player)
+26. [Alchemy Potion Brewing](#alchemy-potion-brewing)
+27. [Alchemy Game Lifecycle](#alchemy-game-lifecycle)
+
+> **Note on section 11:** an earlier revision of this doc referenced a separate "Live Stream (Lightweight)" endpoint set. No such implementation exists in current source — `LiveStreamController` is the only live-stream controller. That TOC entry has been removed.
 
 ---
 
@@ -58,14 +69,15 @@ The Lexicon Server uses **HTTP session-based authentication**. Sessions are stor
 5. Server validates session on protected endpoints
 
 #### Protected Endpoints:
-- Most endpoints require authentication via session cookie
-- Unauthenticated requests return **401 Unauthorized**
 - Use `/api/auth/me` to check if session is valid
+- **Important:** `LexiconSecurityConfig` currently `permitAll()`s nearly every `/api/**` path at the Spring Security filter level — including `/api/players/**`, `/api/media/**`, `/api/playlists/**`, `/api/playback/**`, `/api/livestream/**`, `/api/stream/**`, `/api/download-queue/**`, `/api/messages/**`, `/api/chat/**`, `/api/push/**`, `/api/notifications/**`, `/api/events/**`, `/api/avatar/**`, and the auth entry points themselves. Only `/api/voice/**` and `/api/app/**` (version/update metadata, gated by a property that defaults to requiring auth) fall through to the catch-all `authenticated()` rule.
+- In practice this means most endpoints do **not** return 401 for missing sessions at the framework level — any "auth" on them is whatever the controller/service manually checks (a session attribute, or nothing at all). Several endpoints trust a plain `userId` query/body parameter with **no verification that it matches the caller's session** (e.g. Playback Position, Messages, Push subscribe/send). Treat `userId` on those endpoints as client-asserted, not server-verified.
+- Endpoints that do manually check for an active session: `GET /api/auth/me`, `POST /api/auth/sso/generate-token`, `GET /api/voice/status`, `POST /api/voice/turn`. These return `401 Unauthorized` on a missing/invalid session even though Spring Security itself would let the request through.
 
 #### Authorization:
-- **User-Based Permissions:** Users can only modify their own content
-- **Public Access:** Public media/playlists are readable by all authenticated users
-- **Owner Checks:** Update/delete operations verify userId matches resource owner
+- **User-Based Permissions:** Some resources (playlists, media, messages) verify `userId` matches the resource's stored owner before update/delete and throw a `403`-mapped exception if not — but only for the specific mutation endpoints that implement that check (see each section below). Creation and most read endpoints do not verify ownership at all.
+- **Public Access:** Public media/playlists are readable by anyone, authenticated or not (per the `permitAll()` posture above).
+- **Known gap:** `GET /api/players`, `GET /api/players/{id}`, and `GET /api/players/username/{username}` (Lexicon) and `GET /api/player/{id}`, `GET /api/player/username/{username}`, `GET /api/player/all` (Alchemy) currently serialize the full `Player` object, which includes the password field — there is no `@JsonIgnore` on it. Do not expose these responses directly to untrusted clients without stripping `password` first.
 
 ---
 
@@ -126,9 +138,13 @@ Authenticate user and create session.
 ```json
 {
   "username": "string",
-  "password": "string"
+  "password": "string",
+  "rememberMe": false,
+  "platform": "mobile"
 }
 ```
+- `rememberMe` (boolean, optional): if `true`, also sets a long-lived `remember-me` cookie (HttpOnly, `Path=/`, 30-day) so `/api/auth/me` can silently re-establish a session without re-login.
+- `platform` (string, optional): pass `"mobile"` to additionally receive a bearer-style `mobileToken` in the response, for clients that can't rely on cookies.
 
 **Response (200):**
 ```json
@@ -139,16 +155,18 @@ Authenticate user and create session.
   "username": "john_doe",
   "displayName": "John Doe",
   "email": "john@example.com",
-  "level": 5
+  "level": 5,
+  "mobileToken": "opaque-token-here"
 }
 ```
+`mobileToken` is only present when `platform` was `"mobile"`.
 
 **Errors:**
-- `400 Bad Request`: Missing username/password
-- `401 Unauthorized`: Invalid credentials
-- `500 Internal Server Error`: Server error
+- `400 Bad Request`: Missing username/password. **Note:** unlike most other endpoints, this and the other `/api/auth/*` error responses are returned as a **plain text string**, not a JSON object (e.g. body is literally `Username and password required`).
+- `401 Unauthorized`: Invalid credentials (plain text `Invalid username or password`)
+- `500 Internal Server Error`: Server error (plain text)
 
-**Sets Cookie:** `JSESSIONID` (30 day expiration)
+**Sets Cookie:** `JSESSIONID` (30 day expiration); `remember-me` (30 day, only if `rememberMe: true`)
 
 ---
 
@@ -203,9 +221,12 @@ Get current authenticated user from session.
 ```
 
 **Errors:**
-- `401 Unauthorized`: No valid session
+- `401 Unauthorized`: No valid session and no valid `remember-me` cookie, or the remembered user no longer exists (empty body)
 
 **Use Case:** Check if user is logged in, get user details
+
+**Notes:**
+- If there is no active session but a valid `remember-me` cookie is present, the server transparently re-establishes a session and **rotates** the remember-me cookie (issues a new token, invalidates the old one) before returning the user.
 
 ---
 
@@ -221,6 +242,9 @@ Invalidate current session.
   "message": "Logged out successfully"
 }
 ```
+
+**Notes:**
+- Also revokes the caller's `remember-me` token(s) and any issued `mobileToken`(s), and clears the `remember-me` cookie. Works even if there is no active session (a no-op in that case beyond clearing cookies).
 
 ---
 
@@ -285,6 +309,8 @@ Validate and consume an SSO token. This endpoint is intended for bridge service 
 
 Base Path: `/api/players`
 
+**Note:** This controller predates `/api/auth/*` and duplicates its login/register functionality with different response shapes and, notably, `/api/players/login` does **not** create a session or set `JSESSIONID` — it just validates credentials and returns the player. Prefer `/api/auth/login` and `/api/auth/register` for anything that needs a real session; `/api/players/register` and `/api/players/login` remain available for backward compatibility.
+
 ### GET /api/players
 Get all players.
 
@@ -336,6 +362,106 @@ Get player by username.
 - `username` (string): Player username
 
 **Response:** Same as GET by ID
+
+---
+
+### POST /api/players/register
+Register a new player (duplicate of `/api/auth/register`, different response shape; does not create a session).
+
+**Request Body:**
+```json
+{
+  "username": "string (required)",
+  "password": "string (required)",
+  "email": "string (optional)",
+  "displayName": "string (optional)"
+}
+```
+
+**Response (201 Created):**
+```json
+{
+  "success": true,
+  "message": "Player registered successfully",
+  "playerId": 42,
+  "username": "new_user"
+}
+```
+
+**Errors:**
+- `400 Bad Request`: `{ "error": "message" }` — missing fields or duplicate username
+- `500 Internal Server Error`: `{ "error": "message" }`
+
+---
+
+### POST /api/players/login
+Validate credentials and return the player (duplicate of `/api/auth/login`; does **not** create a session or set `JSESSIONID`).
+
+**Request Body:**
+```json
+{
+  "username": "string",
+  "password": "string"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Login successful",
+  "player": {
+    "id": 1,
+    "username": "john_doe",
+    "displayName": "John Doe",
+    "email": "john@example.com",
+    "level": 5
+  }
+}
+```
+
+**Errors:**
+- `400 Bad Request`: `{ "error": "Invalid username or password" }` — note this endpoint uses `400`, not `401`, for bad credentials
+
+---
+
+### PUT /api/players/{id}
+Update player fields.
+
+**Path Parameters:**
+- `id` (integer): Player ID
+
+**Request Body:** `{ "field": "value", ... }` (arbitrary map)
+
+**⚠️ Not implemented:** This endpoint currently performs no update regardless of the request body. It only checks that the player exists and always returns:
+```json
+{
+  "message": "Update functionality requires database method implementation",
+  "playerId": 1
+}
+```
+**Errors:**
+- `404 Not Found`: Player doesn't exist
+
+---
+
+### DELETE /api/players/{id}
+Delete a player by ID. **No ownership or auth check** — any caller can delete any player.
+
+**Path Parameters:**
+- `id` (integer): Player ID
+
+**Response (200):**
+```json
+{
+  "message": "Player deleted successfully",
+  "playerId": 1
+}
+```
+
+**Errors:**
+- `404 Not Found`: `{ "error": "Player not found" }`
+- `500 Internal Server Error`: `{ "error": "message" }`
 
 ---
 
@@ -409,7 +535,7 @@ Download media from URL using yt-dlp (YouTube, SoundCloud, etc.).
 - `400 Bad Request`: Invalid URL or parameters
 - `500 Internal Server Error`: Download/upload failed
 
-**Note:** This is synchronous. For async downloads, use `/api/download-queue/start`.
+**Note:** This is synchronous and blocks until the yt-dlp download finishes — for long media, prefer the async `/api/download-queue/start`, which wraps the identical download logic but returns a job ID immediately.
 
 ---
 
@@ -597,6 +723,16 @@ Stream media file with HTTP Range support (for video/audio playback).
 - Headers: `Content-Range`, `Accept-Ranges: bytes`, `Content-Length`
 
 **Use Case:** Video player seeking, audio streaming
+
+---
+
+### GET /api/media/storage-info
+Get disk usage/capacity info for the configured storage drive(s). Operational/ops endpoint — not part of the media CRUD flow, and has no auth check.
+
+**Response (200):** Shape returned by `OptimizedFileStorageService.getStorageInfo()` (drive capacity/usage details).
+
+**Errors:**
+- `500 Internal Server Error`: Plain text error message
 
 ---
 
@@ -1338,8 +1474,13 @@ Base Path: `/api/livestream`
 
 **Use Case:** Synchronized video/music stream for all users.
 
-### GET /api/livestream/state
+**Channels:** Every endpoint below accepts an optional `?channel=video|music` query parameter (default: `video`). The server runs two independent live-stream states/queues in parallel — one per channel — so `state`, `queue`, and SSE events are all channel-scoped. Pass the same `channel` consistently across state/queue/SSE calls for a given player UI.
+
+### GET /api/livestream/state?channel={channel}
 Get current live stream state.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Response (200):**
 ```json
@@ -1360,8 +1501,11 @@ Get current live stream state.
 
 ---
 
-### GET /api/livestream/queue
+### GET /api/livestream/queue?channel={channel}
 Get current queue.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Response (200):**
 ```json
@@ -1389,8 +1533,11 @@ Get current queue.
 
 ---
 
-### GET /api/livestream/eligible-media
+### GET /api/livestream/eligible-media?channel={channel}
 Get all media eligible for livestream queue.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Response (200):**
 ```json
@@ -1406,8 +1553,11 @@ Get all media eligible for livestream queue.
 
 ---
 
-### POST /api/livestream/queue
+### POST /api/livestream/queue?channel={channel}
 Add media to queue.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Request Body:**
 ```json
@@ -1426,9 +1576,41 @@ Add media to queue.
 }
 ```
 
+**Errors:**
+- `400 Bad Request`: Missing `userId`/`mediaFileId`, or invalid media
+
 ---
 
-### DELETE /api/livestream/queue/{queueId}?userId={userId}
+### POST /api/livestream/queue/playlist?channel={channel}
+Add every media item in a playlist to the queue in one call.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
+
+**Request Body:**
+```json
+{
+  "userId": 1,
+  "playlistId": 10
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Playlist added to queue",
+  "addedCount": 12
+}
+```
+
+**Errors:**
+- `400 Bad Request`: Missing `userId`/`playlistId`, or invalid playlist
+- `403 Forbidden`: Playlist is private and not owned by `userId`
+
+---
+
+### DELETE /api/livestream/queue/{queueId}?userId={userId}&channel={channel}
 Remove item from queue.
 
 **Path Parameters:**
@@ -1436,6 +1618,7 @@ Remove item from queue.
 
 **Query Parameters:**
 - `userId` (integer): User ID (must match queuer)
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Response (200):**
 ```json
@@ -1445,10 +1628,16 @@ Remove item from queue.
 }
 ```
 
+**Errors:**
+- `500 Internal Server Error`: Covers not-found/not-owner cases too — this endpoint does not return a distinct `404`/`403`
+
 ---
 
-### POST /api/livestream/skip
+### POST /api/livestream/skip?channel={channel}
 Vote to skip current media.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Request Body:**
 ```json
@@ -1472,8 +1661,11 @@ Vote to skip current media.
 
 ---
 
-### GET <mark>/api/livestream/updates</mark>
+### GET <mark>/api/livestream/updates?channel={channel}</mark>
 **Server-Sent Events (SSE)** endpoint for real-time updates.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Response:** SSE stream
 
@@ -1489,7 +1681,7 @@ event: heartbeat
 data: "connected"
 
 event: init
-data: {"type":"init","state":{...},"queue":[...],"queueSize":5,"timestamp":1708000000000}
+data: {"type":"init","channel":"video","state":{...},"queue":[...(up to 6 items, centered on the currently playing item)...],"queueSize":5,"timestamp":1708000000000}
 
 event: state-update
 data: {"type":"state-update","data":{...}}
@@ -1505,8 +1697,11 @@ data: {"type":"queue-update","data":{"items":[...],"totalCount":6}}
 
 ---
 
-### POST /api/livestream/media-ended
+### POST /api/livestream/media-ended?channel={channel}
 Report that current media has ended (called by frontend).
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Response (200):**
 ```json
@@ -1516,6 +1711,7 @@ Report that current media has ended (called by frontend).
   "timeMs": 45
 }
 ```
+`timeMs` is server-side timing instrumentation for the advance operation, not media playback time.
 
 **Notes:**
 - Automatically advances to next media in queue
@@ -1523,8 +1719,11 @@ Report that current media has ended (called by frontend).
 
 ---
 
-### POST /api/livestream/advance
-Manually advance to next media (admin/testing).
+### POST /api/livestream/advance?channel={channel}
+Manually advance to next media (admin/testing). Functionally similar to `/media-ended` but intended as a manual trigger rather than an end-of-playback report.
+
+**Query Parameters:**
+- `channel` (string, optional, default: `video`): `video` or `music`
 
 **Response (200):**
 ```json
@@ -1542,6 +1741,8 @@ Base Path: `/api/stream`
 
 **Use Case:** Enhanced streaming with HTTP Range support.
 
+**Note:** This overlaps with `GET /api/media/stream/{id}` (see Media Management) — both implement HTTP range streaming for the same `MediaFile` resource. This controller is the intended canonical path for files stored on disk (it 302-redirects to `/api/media/stream/{id}` for files that only exist in the database, delegating to that controller's DB-read fallback).
+
 ### GET /api/stream/{mediaFileId}
 Stream media file with range support.
 
@@ -1551,15 +1752,44 @@ Stream media file with range support.
 **Request Headers:**
 - `Range` (optional): e.g., `bytes=0-1023` for seeking
 
-**Response (200 or 206):**
-- Binary file data
-- Status: `200 OK` (full file) or `206 Partial Content` (range request)
-- Headers: `Content-Range`, `Accept-Ranges: bytes`, `Content-Length`, `Content-Type`
+**Response (200, 206, or 302):**
+- `200 OK`: Full file (no `Range` header), with `Accept-Ranges: bytes`, `Content-Length`
+- `206 Partial Content`: Range request satisfied, with `Content-Range`, `Content-Length`
+- `302 Found`: Media has no on-disk `filePath` (DB-stored) — redirects to `GET /api/media/stream/{id}`
+- `416 Range Not Satisfiable`: Requested range is out of bounds, with `Content-Range: bytes */{totalSize}`
+
+**Errors:**
+- `404 Not Found`: Media file doesn't exist
+- `500 Internal Server Error`: I/O error while streaming
 
 **Notes:**
 - Automatically handles file system or database storage
 - Supports video seeking via range requests
-- Better performance than `/api/media/stream/{id}` for large files
+- Better performance than `/api/media/stream/{id}` for large on-disk files
+
+---
+
+### GET /api/stream/{mediaFileId}/info
+Get stream metadata for a media file without downloading its bytes (useful for a player to pre-check seekability/size).
+
+**Path Parameters:**
+- `mediaFileId` (integer): Media file ID
+
+**Response (200):**
+```json
+{
+  "id": 123,
+  "title": "My Video",
+  "contentType": "video/mp4",
+  "fileSize": 52428800,
+  "supportsRanges": true,
+  "mediaType": "VIDEO"
+}
+```
+
+**Errors:**
+- `404 Not Found`: Media file doesn't exist
+- `500 Internal Server Error`: Server error
 
 ---
 
@@ -1904,6 +2134,467 @@ Send an encrypted push notification to multiple users.
 }
 ```
 
+**⚠️ No auth:** Neither `/send` nor `/send-bulk` verify the caller — any client that can reach the API can push an arbitrary title/body/url/data to any `userId`. These are intended to be called only by the Mumble bridge or other internal services; there is currently no server-side enforcement of that.
+
+---
+
+## Notifications (In-App / Mumble Bridge)
+
+Base Path: `/api/notifications`
+
+**Use Case:** In-app notification feed (bell icon) backing the [[notification-system-mumble-lexicon]] integration — the Mumble bridge machine calls `POST /api/notifications` to originate voice-chat events (messages, joins, @mentions), and Lexicon itself creates `music` notifications for "now playing" events internally. The frontend/Android app reads history via `GET` and gets live delivery via SSE. No endpoint in this controller requires a session — `userId` is always a plain, unauthenticated request parameter.
+
+**Notification object:**
+```typescript
+{
+  id: number;
+  targetUserId: number | null; // null = broadcast to all eligible users
+  type: "message" | "voice_join" | "mention" | "music";
+  title: string;
+  body: string;
+  source: string; // default "mumble"
+  fromUsername: string;
+  fromUserId: number; // excluded from recipients (actor never notified of own action)
+  channelId: number | null;
+  link: string | null;
+  createdAt: string; // ISO 8601
+  deliverPush?: boolean; // request-only; false skips push fan-out; not persisted
+}
+```
+
+**NotificationPrefs object:**
+```typescript
+{
+  userId: number;
+  enableMessage: boolean;   // default true
+  enableVoiceJoin: boolean; // default true
+  enableMention: boolean;   // default true
+  enableMusic: boolean;     // default false
+  enablePush: boolean;      // default true
+  lastReadAt: string | null; // ISO 8601
+}
+```
+
+### POST /api/notifications
+Create a notification. Persists it, fans it out live over SSE to every eligible connected user, and asynchronously delivers OS/browser push to users who opted in — excluding the actor (`fromUserId`) and respecting each recipient's `NotificationPrefs`.
+
+**Request:**
+```json
+{
+  "targetUserId": null,
+  "type": "message",
+  "title": "New message in #general",
+  "body": "hey everyone",
+  "source": "mumble",
+  "fromUsername": "alex",
+  "fromUserId": 3,
+  "channelId": 1,
+  "link": "/lexicon-dashboard",
+  "deliverPush": true
+}
+```
+Omit/null `targetUserId` to broadcast to all eligible users; set it for a directed notification (e.g. a mention).
+
+**Response (200):**
+```json
+{ "success": true, "id": 142 }
+```
+
+**Errors:**
+- `400 Bad Request`: `{ "success": false, "message": "..." }`
+- `500 Internal Server Error`: `{ "success": false, "message": "Failed to create notification: ..." }`
+
+---
+
+### GET /api/notifications?userId={userId}&limit={limit}&before={before}
+List a user's notification history (targeted + broadcast), newest first.
+
+**Query Parameters:**
+- `userId` (integer, required)
+- `limit` (integer, optional, default: 50; values ≤0 or >200 are clamped back to 50)
+- `before` (long, optional): pagination cursor — returns notifications created before this notification ID
+
+**Response (200):** Array of Notification objects (see above)
+
+**Errors:**
+- `500 Internal Server Error`: `{ "success": false, "message": "..." }`
+
+---
+
+### GET /api/notifications/unread-count?userId={userId}
+Get a user's unread notification count.
+
+**Response (200):**
+```json
+{ "count": 4 }
+```
+
+---
+
+### POST /api/notifications/read-all?userId={userId}
+Mark all of a user's notifications as read (advances their `lastReadAt` cursor).
+
+**Response (200):**
+```json
+{ "success": true }
+```
+
+---
+
+### GET /api/notifications/prefs?userId={userId}
+Get a user's notification preferences (creates defaults on first access).
+
+**Response (200):** NotificationPrefs object (see above)
+
+---
+
+### PUT /api/notifications/prefs?userId={userId}
+Update a user's notification preferences.
+
+**Request:** NotificationPrefs JSON body (the `userId` query param wins over any `userId` in the body):
+```json
+{
+  "enableMessage": true,
+  "enableVoiceJoin": false,
+  "enableMention": true,
+  "enableMusic": true,
+  "enablePush": true
+}
+```
+
+**Response (200):**
+```json
+{ "success": true }
+```
+
+---
+
+### GET /api/notifications/stream?userId={userId}
+**Server-Sent Events (SSE)** endpoint for live notification delivery to one user.
+
+**Response:** SSE stream (connection held up to 30 minutes; server sends a `heartbeat` every 30s to keep proxies like Cloudflare from closing it)
+
+**Example Events:**
+```
+event: heartbeat
+data: "connected"
+
+event: init
+data: {"unreadCount": 4}
+
+event: heartbeat
+data: "ping"
+
+event: notification
+data: {"id":142,"targetUserId":null,"type":"message","title":"New message in #general","body":"hey everyone","source":"mumble","fromUsername":"alex","fromUserId":3,"channelId":1,"link":"/lexicon-dashboard","createdAt":"2026-09-19T10:00:00"}
+```
+A `notification` event fires only if the connected user is an eligible recipient (not the actor, notification type enabled in their prefs, and either broadcast or directly targeted at them).
+
+---
+
+## Events & Polls
+
+Base Path: `/api/events`
+
+**Use Case:** Lightweight event creation with attached polls (e.g. "Where should we eat for my birthday?") and anonymous voting. No endpoint requires a session — creation is "gated client-side" per the security config comment, and voter identity is a client-generated `voterKey` (e.g. a device ID), not a user account.
+
+**Model shapes:**
+```typescript
+Event:      { id, title, description, eventDate /* ISO date */, createdByUserId, createdAt, pollCount }
+Poll:       { id, eventId, question, allowAddOptions, displayOrder, createdAt }
+PollOption: { id, pollId, text, addedByName, createdAt, voteCount, voters: string[], votedByMe }
+```
+
+### POST /api/events
+Create a new event.
+
+**Request:**
+```json
+{ "title": "My Birthday", "description": "Aug 7 party", "eventDate": "2026-08-07", "userId": 12 }
+```
+`title` required (non-blank); `description`, `eventDate`, `userId` optional.
+
+**Response (200):** The created Event object.
+
+**Errors:**
+- `400 Bad Request`: `{ "success": false, "message": "Event title cannot be empty" }`
+- `500 Internal Server Error`: `{ "success": false, "message": "Failed to create event: ..." }`
+
+---
+
+### GET /api/events
+List all events, each annotated with its poll count.
+
+**Response (200):** Array of Event objects.
+
+---
+
+### GET /api/events/{eventId}
+Get one event plus all of its polls.
+
+**Path Parameters:**
+- `eventId` (long)
+
+**Response (200):**
+```json
+{
+  "event": { "id": 5, "title": "My Birthday", "description": "...", "eventDate": "2026-08-07", "createdByUserId": 12, "createdAt": "..." },
+  "polls": [ { "id": 9, "eventId": 5, "question": "Where to eat?", "allowAddOptions": true, "displayOrder": 0, "createdAt": "..." } ]
+}
+```
+**Note:** an unknown `eventId` does not 404 — `event` comes back `null` and `polls` is an empty array.
+
+---
+
+### POST /api/events/{eventId}/polls
+Add a poll to an event, optionally seeded with initial options.
+
+**Path Parameters:**
+- `eventId` (long)
+
+**Request:**
+```json
+{ "question": "Where to eat?", "allowAddOptions": true, "seedOptions": ["Pizza", "Sushi"] }
+```
+`question` required. `allowAddOptions` optional, defaults `true`. `seedOptions` optional — each becomes an unvoted PollOption.
+
+**Response (200):** The created Poll object (does not include seeded options — fetch the poll detail endpoint below to see them).
+
+**Errors:**
+- `400 Bad Request`: `{ "success": false, "message": "Poll question cannot be empty" }`
+- `500 Internal Server Error`: `{ "success": false, "message": "Failed to add poll: ..." }`
+
+---
+
+### GET /api/events/{eventId}/polls/{pollId}?voterKey={voterKey}
+Get a poll plus its options, with per-option vote counts/voters, optionally personalized to a voter.
+
+**Path Parameters:**
+- `eventId` (long, present in path but not used to scope the lookup — only `pollId` matters)
+- `pollId` (long)
+
+**Query Parameters:**
+- `voterKey` (string, optional): if provided, each option's `votedByMe` reflects that voter's votes
+
+**Response (200):**
+```json
+{
+  "poll": { "id": 9, "eventId": 5, "question": "Where to eat?", "allowAddOptions": true, "displayOrder": 0, "createdAt": "..." },
+  "options": [
+    { "id": 21, "pollId": 9, "text": "Pizza", "addedByName": null, "createdAt": "...", "voteCount": 3, "voters": ["Alex", "Sam", "Jo"], "votedByMe": true }
+  ]
+}
+```
+
+---
+
+### POST /api/events/{eventId}/polls/{pollId}/options
+Add a new option to a poll — this simultaneously registers as the submitter's vote for it.
+
+**Path Parameters:**
+- `eventId` (long, unused by the service), `pollId` (long)
+
+**Request:**
+```json
+{ "text": "Tacos", "voterKey": "device-abc123", "voterName": "Jo" }
+```
+`text`, `voterName`, `voterKey` all required (non-blank).
+
+**Response (200):** The created PollOption, pre-populated as the submitter's vote.
+
+**Errors:**
+- `400 Bad Request`: one of `{ "message": "Option text cannot be empty" }`, `{ "message": "A name is required to add an option" }`, `{ "message": "A voter identity is required to add an option" }`
+- `500 Internal Server Error`
+
+---
+
+### PUT /api/events/{eventId}/polls/{pollId}/votes
+Set the full set of options a voter has selected in a poll (diffed against their current votes — add/remove to match exactly what's requested).
+
+**Path Parameters:**
+- `eventId` (long, unused by the service), `pollId` (long)
+
+**Request:**
+```json
+{ "voterKey": "device-abc123", "voterName": "Jo", "optionIds": [21, 23] }
+```
+`voterName`, `voterKey` required. `optionIds` optional — `null`/omitted clears all of this voter's votes in the poll. IDs outside this poll are silently ignored.
+
+**Response (200):**
+```json
+{ "success": true }
+```
+
+**Errors:**
+- `400 Bad Request`: `{ "message": "A name is required to vote" }` or `{ "message": "A voter identity is required to vote" }`
+- `500 Internal Server Error`
+
+---
+
+## Voice Relay (Lexi)
+
+Base Path: `/api/voice`
+
+**Use Case:** Relays a browser-recorded voice clip from the Lexicon frontend to **Lexi**, the local voice-assistant process bound to `127.0.0.1:8765` on the same host (aragon), and returns Lexi's reply. This exists because aragon's microphone isn't always physically accessible, so recording happens in the browser instead. This is distinct from `voice.alex-dyakin.com` (the Mumble Bridge / SSO target) — this endpoint talks to Lexi over localhost only, and is not reachable if Lexi isn't running on the same machine as this Lexicon instance.
+
+**Auth Required:** Yes, for both endpoints — this is one of the few controllers Spring Security actually gates (`/api/voice/**` falls through to the catch-all `authenticated()` rule), and the controller additionally self-checks the session.
+
+### GET /api/voice/status
+Report whether the voice relay is configured, so the frontend can explain itself before the user records anything.
+
+**Response (200):**
+```json
+{ "configured": true }
+```
+`configured` reflects whether the server has a `lexi.tool.token` configured (i.e. whether it *can* authenticate to Lexi at all) — not whether Lexi is currently running/reachable.
+
+**Errors:**
+- `401 Unauthorized`: `{ "error": "Not authenticated" }`
+
+---
+
+### POST /api/voice/turn
+Relay one recorded audio clip to Lexi and return its reply.
+
+**Request:** Raw binary body (any `Content-Type` accepted — whatever container the browser's `MediaRecorder` produced, e.g. WebM/Opus or MP4/AAC). Max 8MB.
+
+**Response:** Status code and JSON body are passed through **verbatim** from Lexi's own `/turn` endpoint — Lexicon does not reinterpret or re-wrap it, since Lexi already distinguishes cases like "no speech," "could not decode," and "brain down."
+
+**Errors:**
+- `401 Unauthorized`: `{ "error": "Not authenticated" }`
+- `400 Bad Request`: `{ "error": "No audio was uploaded" }` (empty/missing clip) or `{ "error": "Clip is larger than 8MB" }`
+- `503 Service Unavailable`: `{ "error": "Lexi tool token is not configured on the server" }` (fails closed rather than calling Lexi unauthenticated) or `{ "error": "Lexi is not running on this machine" }` (connection refused)
+- `500 Internal Server Error`: `{ "error": "Voice relay failed: ..." }`
+- Any other status/body Lexi itself returns is passed through unchanged.
+
+---
+
+## Avatar Proxy (Mumble Bridge)
+
+Base Path: `/api/avatar`
+
+**Use Case:** Proxies avatar get/upload/remove/image requests from the Lexicon frontend through to the Mumble Bridge (`https://voice.alex-dyakin.com`), so browsers with strict cross-origin protections (e.g. Brave) can still load bridge-hosted avatar images. No auth required on any endpoint (`permitAll`).
+
+### GET /api/avatar/{username}
+Fetch a user's avatar metadata (proxies to bridge `GET /api/avatar/{username}`).
+
+**Response (200):** Whatever JSON the bridge returns (bridge-defined shape — typically avatar URL/metadata).
+
+**Errors:**
+- Bridge error status is forwarded as-is: `{ "success": false, "message": "Bridge returned error: 404 NOT_FOUND" }`
+- `502 Bad Gateway`: `{ "success": false, "message": "Failed to reach avatar service: ..." }` (bridge unreachable)
+
+---
+
+### POST /api/avatar/upload
+Upload an avatar image (proxied as multipart to bridge `POST /api/avatar/upload`).
+
+**Request (multipart/form-data):**
+- `username` (string, required)
+- `userId` (integer, optional)
+- `avatar` (file, required)
+
+**Response (200):** Bridge's JSON response, passed through.
+
+**Errors:** Same forwarding pattern as above, with `"Failed to upload avatar: ..."` on unreachable bridge.
+
+---
+
+### POST /api/avatar/remove
+Remove a user's avatar (proxied as JSON to bridge `POST /api/avatar/remove`).
+
+**Request:**
+```json
+{ "username": "someuser", "userId": 123 }
+```
+
+**Response (200):** Bridge's JSON response, passed through.
+
+**Errors:** Same forwarding pattern, with `"Failed to remove avatar: ..."` on unreachable bridge.
+
+---
+
+### GET /api/avatar/image/{*path}
+Proxy the actual avatar image bytes through Lexicon, avoiding a direct cross-origin image request to the bridge (proxies to bridge `GET /uploads/avatars/{path}`).
+
+**Path Parameters:**
+- `path` (string, required): everything after `/image/`, e.g. `user123/avatar.png`
+
+**Response (200):** Raw image bytes. `Content-Type` from the bridge response (falls back to `image/jpeg`). `Cache-Control: no-cache, must-revalidate`.
+
+**Errors:**
+- `404 Not Found`: Bridge responded without 2xx, or with an empty body
+- `502 Bad Gateway`: Bridge unreachable
+
+---
+
+## App Version & Update
+
+Base Path: `/api/app`
+
+**Use Case:** Metadata + APK download the Lexicon Android app polls to detect and prompt for in-app updates.
+
+**Auth Required:** By default, **yes** for both endpoints (they fall through to the `/api/app/**` → `authenticated()` rule). They can be made public via server properties (`app.update.public-metadata=true` for the version endpoint, `app.update.public-download=true` for the download endpoint), but both properties default to `false`.
+
+### GET /api/app/version
+Return the latest available app version metadata. All values come from application properties — nothing is computed or read from disk.
+
+**Response (200):**
+```json
+{
+  "versionCode": 1,
+  "versionName": "0.1.0",
+  "downloadUrl": "https://api.alex-dyakin.com/api/app/download/latest",
+  "critical": false,
+  "changelog": ""
+}
+```
+`sha256` is included only if the `app.update.sha256` property is set (non-blank); otherwise the key is omitted, not null.
+
+---
+
+### GET /api/app/download/latest
+Download the latest Android APK build.
+
+**Response (200):** Binary APK stream.
+- `Content-Type: application/vnd.android.package-archive`
+- `Content-Disposition: attachment; filename=lexicon-latest.apk`
+- `Content-Length`
+
+**Errors:**
+- `404 Not Found`: Configured APK path (`app.update.apk-path`, default `./releases/lexicon-latest.apk`) doesn't exist
+
+---
+
+## Health & Info
+
+Base Path: `/api`
+
+**Use Case:** Basic health-check and static service-info endpoints. No auth required (`permitAll`).
+
+### GET /api/health
+Health check.
+
+**Response (200):**
+```json
+{ "status": "OK", "service": "Lexicon API", "message": "Lexicon backend is running!" }
+```
+
+---
+
+### GET /api/info
+Static service metadata.
+
+**Response (200):**
+```json
+{
+  "service": "Lexicon Media Sharing API",
+  "version": "1.0.0",
+  "description": "Personal video and audio sharing platform",
+  "features": ["User authentication", "Media file upload", "Video sharing", "Audio sharing", "Public/private media"]
+}
+```
+
 ---
 
 ## Data Models
@@ -2041,6 +2732,75 @@ Send an encrypted push notification to multiple users.
 }
 ```
 
+### Notification
+```typescript
+{
+  id: number;
+  targetUserId: number | null; // null = broadcast
+  type: "message" | "voice_join" | "mention" | "music";
+  title: string;
+  body: string;
+  source: string; // default "mumble"
+  fromUsername: string;
+  fromUserId: number;
+  channelId: number | null;
+  link: string | null;
+  createdAt: string; // ISO 8601
+}
+```
+
+### NotificationPrefs
+```typescript
+{
+  userId: number;
+  enableMessage: boolean;
+  enableVoiceJoin: boolean;
+  enableMention: boolean;
+  enableMusic: boolean;
+  enablePush: boolean;
+  lastReadAt: string | null; // ISO 8601
+}
+```
+
+### Event
+```typescript
+{
+  id: number;
+  title: string;
+  description: string | null;
+  eventDate: string | null; // ISO date (YYYY-MM-DD)
+  createdByUserId: number | null;
+  createdAt: string; // ISO 8601
+  pollCount: number;
+}
+```
+
+### Poll
+```typescript
+{
+  id: number;
+  eventId: number;
+  question: string;
+  allowAddOptions: boolean;
+  displayOrder: number;
+  createdAt: string; // ISO 8601
+}
+```
+
+### PollOption
+```typescript
+{
+  id: number;
+  pollId: number;
+  text: string;
+  addedByName: string | null;
+  createdAt: string; // ISO 8601
+  voteCount: number;
+  voters: string[];
+  votedByMe: boolean; // only meaningful when a voterKey was supplied on the request
+}
+```
+
 ### ChunkedUpload
 ```typescript
 {
@@ -2085,10 +2845,12 @@ Send an encrypted push notification to multiple users.
 ## Holdfast Management (Alchemy API)
 
 **Base URL:** `https://alchemy.alex-dyakin.com` (production) or `http://localhost:8080` (local)  
-**Auth:** Session cookie (`JSESSIONID`) — include `credentials: 'include'` in all fetch calls  
+**Auth:** ⚠️ **None actually enforced.** `SecurityConfig` in this server sets `.anyRequest().permitAll()` app-wide, and `HoldfastController` never checks the session. Any caller can create/read/modify/delete any group's holdfast by name with no `JSESSIONID`. (`GET /api/auth/me` is the only endpoint in this whole server that checks a session — see [Alchemy Authentication](#alchemy-authentication).)  
 **Path prefix:** `/api/holdfast`
 
 A D&D settlement management system. Holdfasts have buildings, resources, population, and gold — time advances day-by-day with raids, production events, and population growth.
+
+**Error response format note:** almost every error in this controller (and every other controller in this server) is returned as a **plain text string** body (e.g. `groupName is required`), not a JSON object — despite the examples below sometimes showing JSON for illustration. The only Holdfast endpoints with genuinely JSON error bodies are `POST /build` and `POST /advance`.
 
 ---
 
@@ -2107,6 +2869,10 @@ Return all holdfasts.
     "castleType": "wood_fort",
     "gold": 608.7,
     "silver": 0,
+    "wood": 0,
+    "stone": 0,
+    "iron": 0,
+    "food": 0,
     "happiness": 50.0,
     "targetHappiness": 50.0,
     "daysElapsed": 7,
@@ -2115,15 +2881,22 @@ Return all holdfasts.
     "wine": 0,
     "tools": 0,
     "raidsSurvived": 0,
+    "foodMarketEnabled": false,
     "buildings": { "tavern": 1, "blacksmith": 1 },
     "wheatFieldPlantDays": [],
+    "ryeFieldPlantDays": [],
     "vegetableGardenPlantDays": [],
     "orchardPlantDays": [],
     "vineyardPlantDays": [],
+    "berryPatchPlantDays": [],
+    "mushroomCavePlantDays": [],
+    "foodBatchDays": [],
+    "foodBatchAmounts": [],
     "populationGrowthHistory": []
   }
 ]
 ```
+**Note:** `wood`, `stone`, `iron`, `food`, `ryeFieldPlantDays`, `berryPatchPlantDays`, `mushroomCavePlantDays`, `foodBatchDays`, `foodBatchAmounts`, and `foodMarketEnabled` were added since this doc was first written — added here for accuracy.
 
 ---
 
@@ -2133,28 +2906,45 @@ Return full status for one holdfast, including a computed building menu.
 **Response `200`:**
 ```json
 {
-  "holdfast": { "...same fields as above..." },
+  "holdfast": { "...same fields as GET /all..." },
   "dailyIncome": 44.1,
   "dailyUpkeep": 1.4,
   "netDailyGold": 42.7,
   "protection": 47.8,
   "raidChance": 4.42,
+  "daysOfFood": 12.5,
+  "nextSpoilIn": 3,
+  "foodShelfLife": 15,
+  "foodMarketEnabled": false,
+  "populationChange": 2,
+  "avgDailyGrowth": 0.3,
+  "populationHistory": [],
   "buildingMenu": [
     {
       "type": "tavern",
       "name": "Tavern",
       "status": "maxed",
-      "currentCount": 1,
-      "maxCount": 1,
-      "cost": 120,
-      "dailySilver": 3.0,
+      "current": 1,
+      "max": 3,
+      "lockReason": null,
+      "baseCost": 60,
+      "cost": 60,
+      "resourceCost": {},
+      "dailySilver": 10.0,
       "dailyUpkeep": 0.5,
       "happiness": 5.0,
+      "harvestFood": 0,
+      "harvestGold": 0,
+      "harvestDays": 0,
+      "productionItem": "beer",
+      "productionAmount": 3,
+      "productionDays": 7,
       "description": "Produces beer every 7 days"
     }
   ]
 }
 ```
+**Note:** the top-level status object gained `daysOfFood`, `nextSpoilIn`, `foodShelfLife`, `foodMarketEnabled`, `populationChange`, `avgDailyGrowth`, and `populationHistory` since this doc was first written. The `buildingMenu` entry fields were also corrected here — the actual JSON keys are `current`/`max` (not `currentCount`/`maxCount`), and each entry also carries `lockReason`, `baseCost`, `resourceCost`, `harvestFood`, `harvestGold`, `harvestDays`, `productionItem`, `productionAmount`, and `productionDays`.
 
 **Response `404`:** `{ "error": "Holdfast not found" }`
 
@@ -2169,7 +2959,17 @@ Create a new holdfast.
 ```
 
 **Response `200`:** Full holdfast object (see GET /all)  
-**Response `400`:** `{ "error": "groupName is required" }` or `{ "error": "Holdfast already exists for group: zx" }`
+**Response `400`:** plain text `groupName is required` or `A holdfast for group '<name>' already exists`
+
+---
+
+### POST /api/holdfast/import
+Import a fully-formed holdfast object (e.g. for migrating/restoring data), instead of creating a fresh default one.
+
+**Request:** Full `Holdfast` JSON object (see GET /all for shape) — `groupName` required.
+
+**Response `200`:** The imported holdfast object.  
+**Response `400`:** plain text — `groupName` blank, or a holdfast for that group already exists.
 
 ---
 
@@ -2197,7 +2997,18 @@ Advance time by N days. Returns a day-by-day event log.
 }
 ```
 
-**Response `400`:** `{ "error": "Days must be between 1 and 365" }`
+**Response `400`:** plain text — `days must be greater than 0` or `Cannot advance more than 365 days at once`
+
+---
+
+### GET /api/holdfast/{groupName}/events
+Return the raw event log for a holdfast (the underlying records behind the `events` array `POST /advance` returns).
+
+**Path Parameters:**
+- `groupName` (string): Group identifier
+
+**Response `200`:** `List<Map>` of event-log entries.  
+**Response `404`:** Holdfast not found (empty body).
 
 ---
 
@@ -2210,23 +3021,30 @@ Build one unit of a building type. Deducts gold; tracks plant days for crop fiel
 ```
 
 **Response `200`:** `{ "success": true, "message": "Built Tavern for 60g", "holdfast": { "..." } }`  
-**Response `400`:** `{ "success": false, "message": "Not enough gold. Need 60g, have 20.0g" }`  
+**Response `400`:** `{ "success": false, "message": "Insufficient funds. Need: 60g, Have: 20.0g. Advance ~1 days." }`  
             or `{ "success": false, "message": "Market requires at least 60 population (current: 40)" }`  
-            or `{ "success": false, "message": "Tavern is already at max (1)" }`
+            or `{ "success": false, "message": "Maximum Taverns reached (3)" }`
 
-**Building types (30 total):**
+(These are the two endpoints in this controller whose error bodies are actually JSON — see the note at the top of this section.)
+
+**Building types (35 total):** five building types (`granary`, `rye_field`, `berry_patch`, `mushroom_cave`, `food_market`) were added since this doc was first written and are marked **NEW** below.
 
 | Type | Min Pop | Base Cost | Daily Silver | Resource Cost | Notes |
 |------|---------|-----------|--------------|---------------|-------|
-| `alchemy_garden` | 0 | 80g | 20s | — | +1 happiness |
+| `alchemy_garden` | 0 | 80g | 8s | — | +1 happiness *(doc previously said 20s — corrected)* |
 | `mine` | 0 | 120g | 0 | — | +2 stone +1 iron per 7d; -5 happiness |
 | `logging_camp` | 0 | 70g | 0 | — | +3 wood per 7d |
-| `tavern` | 0 | 60g | 10s | — | +3 beer per 7d; +5 happiness |
+| `tavern` | 0 | 60g | 10s | — | +3 beer per 7d; +5 happiness (max 3 per holdfast, +2 more unlocked at pop ≥100) |
 | `guard_tower` | 0 | 25g | 0 | 4 wood | +10 protection |
 | `wheat_field` | 0 | 50g | 0 | — | +20 food per 14d, auto-replants |
+| **`granary`** (NEW) | 0 | 80g | 0 | — | -5 upkeep; extends food shelf life by +15 days per granary |
+| **`rye_field`** (NEW) | 0 | 65g | 0 | — | +40 food per 28d, annual crop (fallow after harvest — see `/replant`) |
 | `vegetable_garden` | 30 | 45g | 0 | — | +10 food per 10d, auto-replants; +1 happiness |
+| **`berry_patch`** (NEW) | 20 | 40g | 0 | — | +8 food per 7d, perennial (no replant needed) |
 | `orchard` | 50 | 150g | 0 | — | +8 food +40g per 30d; +2 happiness |
+| **`mushroom_cave`** (NEW) | 50 | 150g | 0 | — | +25 food per 21d, perennial; requires `mine` |
 | `vineyard` | 60 | 180g | 0 | — | +2 wine per 7d; +4 happiness |
+| **`food_market`** (NEW) | 60 | 400g | 0 | — | Sells surplus food for gold when toggled on via `/toggle-food-market`; requires `granary` |
 | `blacksmith` | 35 | 140g | 15s | — | +2 tools per 14d; +5 protection; +1 happiness |
 | `carpenter` | 30 | 110g | 12s | — | -10% build costs per carpenter |
 | `chapel` | 40 | 250g | 0 | 5 stone | +15 happiness |
@@ -2249,7 +3067,9 @@ Build one unit of a building type. Deducts gold; tracks plant days for crop fiel
 | `colosseum` | 180 | 2200g | 50s | — | +20 happiness |
 | `museum` | 160 | 1600g | 0 | — | +12 happiness |
 
-> **Note:** Daily silver is reduced by 15% before conversion to gold (10s = 1g after reduction). Market (+10%) and Major Canal (+15%) bonuses apply after the reduction.
+> **Note:** Daily silver is reduced by 15% before conversion to gold (10s = 1g after reduction). Market (+10%) and Major Canal (+15%) bonuses are multiplicatively equivalent whether applied before or after the 15% reduction — current code applies them before the reduction, but the net result is the same either way.
+
+**Food & crops (added since this doc was first written):** annual crops (`wheat_field`, `rye_field`, `vegetable_garden`) go fallow after each harvest and must be manually re-planted via `POST /api/holdfast/replant`; perennial crops (`berry_patch`, `mushroom_cave`, `orchard`, `vineyard`) keep producing without replanting. `granary` buildings extend how long harvested food keeps before spoiling; `food_market` (requires `granary`) can be toggled to automatically sell surplus food for gold via `POST /api/holdfast/toggle-food-market`.
 
 ---
 
@@ -2286,7 +3106,9 @@ Add gold to the holdfast treasury.
 { "groupName": "zx", "gold": 500.0 }
 ```
 
-**Response `200`:** `{ "message": "Deposited 500.0g successfully", "holdfast": { "..." } }`
+**Response `200`:** The full, updated `Holdfast` object directly (same shape as one item of `GET /all`) — **not** wrapped in a `{ message, holdfast }` envelope as previously documented.  
+**Response `400`:** plain text `Gold amount must be positive` (if `gold` ≤ 0)  
+**Response `404`:** Holdfast not found (empty body)
 
 ---
 
@@ -2299,7 +3121,33 @@ Withdraw gold and/or resources from the holdfast.
 ```
 
 **Response `200`:** `{ "message": "Resources withdrawn successfully", "success": true }`  
-**Response `400`:** `{ "message": "Not enough resources to withdraw", "success": false }`
+**Response `400`:** plain text `Insufficient resources` — **not** the JSON body previously documented here
+
+---
+
+### POST /api/holdfast/replant
+Re-plant a fallow annual crop field for a per-field seed cost. Only applies to annual crops (`wheat_field`, `rye_field`, `vegetable_garden`) — perennial crops don't need this.
+
+**Request:**
+```json
+{ "groupName": "zx", "fieldType": "wheat_field" }
+```
+
+**Response `200`:** `{ "success": true, "message": "Replanted ... field(s)", "holdfast": { "..." } }`  
+**Response `400`:** plain text — `fieldType` isn't an annual crop, there are no fallow fields of that type, or insufficient gold for the seed cost (wheat_field 10g, rye_field 12g, vegetable_garden 8g per field)
+
+---
+
+### POST /api/holdfast/toggle-food-market
+Flip the holdfast's `foodMarketEnabled` flag (requires a built `food_market`) — when enabled, surplus food is automatically sold for gold each day.
+
+**Request:**
+```json
+{ "groupName": "zx" }
+```
+
+**Response `200`:** `{ "success": true, "foodMarketEnabled": true, "holdfast": { "..." } }`  
+**Response `404`:** Holdfast not found (empty body)
 
 ---
 
@@ -2311,9 +3159,284 @@ Delete a holdfast and all its data.
 
 ---
 
+## Alchemy Authentication
+
+**Base URL:** `https://alchemy.alex-dyakin.com` (production) or `http://localhost:8080` (local)  
+**Path prefix:** `/api/auth`
+
+A separate login/session system from Lexicon's `/api/auth` — the Alchemy API has its own `Player` accounts and its own `JSESSIONID` session, backed by Spring Security's `AuthenticationManager`. Sessions are **not** shared between the two servers. This is the only controller in the Alchemy server where auth is actually enforced (via `SecurityContextHolder`) — every other Alchemy endpoint is `permitAll()`.
+
+### POST /api/auth/login
+Authenticate and create an Alchemy session.
+
+**Request:**
+```json
+{ "username": "string", "password": "string" }
+```
+
+**Response `200`:**
+```json
+{ "playerId": 1, "username": "john_doe" }
+```
+
+**Errors:**
+- `401 Unauthorized`: plain text `Invalid credentials`
+- `500 Internal Server Error`: plain text `Error during login: ...`
+
+**Sets Cookie:** `JSESSIONID`
+
+---
+
+### POST /api/auth/register
+Register a new Alchemy player.
+
+**Request:**
+```json
+{ "username": "string", "password": "string" }
+```
+**Note:** there is no `confirmPassword` field — the server passes the same password twice internally, so client-side confirmation is the only check.
+
+**Response `200`:**
+```json
+{ "message": "Registration successful" }
+```
+
+**Errors:**
+- `409 Conflict`: plain text `Username is already taken.`
+- `500 Internal Server Error`: plain text `Error during registration: ...`
+
+---
+
+### GET /api/auth/me
+Get the current authenticated Alchemy player.
+
+**Response `200`:**
+```json
+{ "id": 1, "username": "john_doe", "level": 5 }
+```
+
+**Errors:**
+- `401 Unauthorized`: No valid session, or anonymous principal (empty body)
+- `500 Internal Server Error`: plain text `Error retrieving current user: ...`
+
+---
+
+## Alchemy Player
+
+**Path prefix:** `/api/player` (singular — distinct from Holdfast's `/api/holdfast` and note this is *not* the same base path as Lexicon's `/api/players`)
+
+**No auth enforced** on any endpoint below — `playerId` is trusted as-is from the URL/body. ⚠️ `GET` endpoints that return a full `Player` object include the `password` field (no `@JsonIgnore`) — see the note in [Authentication & Security](#authentication--security).
+
+### GET /api/player/{id}
+Get a player by ID, including inventory, knowledge book, and level.
+
+**Response `200`:** Full `Player` object.  
+**Response `404`:** Not found (empty body)  
+**Response `500`:** plain text error
+
+---
+
+### GET /api/player/username/{username}
+Get a player by username. Same shape/behavior as above.
+
+---
+
+### GET /api/player/all
+List every player (same password-exposure caveat as above).
+
+**Response `200`:** JSON array of `Player` objects.
+
+---
+
+### GET /api/player/inventory/{playerId}
+Get a player's ingredient and potion inventory.
+
+**Response `200`:**
+```json
+{
+  "ingredients": [
+    {
+      "id": 1,
+      "name": "Moonpetal",
+      "effects": [ { "id": 3, "title": "Clarity", "description": "..." } ],
+      "quantity": 2
+    }
+  ],
+  "potions": [
+    {
+      "id": 5,
+      "name": "Elixir of Focus",
+      "quantity": 1,
+      "description": "...",
+      "duration": 10.0,
+      "brewLevel": 2,
+      "dice": "1d6",
+      "effects": [ { "id": 3, "title": "Clarity", "description": "..." } ]
+    }
+  ]
+}
+```
+An ingredient's `effects` are filtered to only those the player's knowledge book has learned; potion `effects` are not filtered.
+
+**Response `404`:** Inventory is null (empty body)
+
+---
+
+### GET /api/player/forage/{playerId}
+Forage a random ingredient for the player.
+
+**Response `200`:**
+```json
+{ "forage": "Moonpetal" }
+```
+
+**Errors:**
+- `400 Bad Request`: plain text `No ingredient available to forage.`
+- `500 Internal Server Error`: plain text error
+
+---
+
+### POST /api/player/ingredient/consume
+Consume an ingredient from a player's inventory.
+
+**Request:**
+```json
+{ "playerId": 1, "ingredientId": 3 }
+```
+
+**Response `200`:** plain text `Ingredient consumed successfully.`
+
+**Errors:**
+- `400 Bad Request`: plain text `Ingredient not found in inventory.`
+- `500 Internal Server Error`: plain text error (also thrown if `playerId`/`ingredientId` aren't JSON integers)
+
+---
+
+### POST /api/player/potion/consume
+Consume a potion from a player's inventory.
+
+**Request:**
+```json
+{ "playerId": 1, "potionId": 5 }
+```
+
+**Response `200`:** plain text `Potion consumed successfully.`
+
+**Errors:**
+- `400 Bad Request`: plain text `Potion not found in inventory.`
+- `500 Internal Server Error`: plain text error
+
+---
+
+### POST /api/player/levelup
+Level up a player, gated by a hardcoded shared secret (not a per-user password) checked server-side. Max level is 10.
+
+**Request:**
+```json
+{ "playerId": 1, "secretPassword": "string" }
+```
+
+**Response `200`:** Full updated `Player` object (includes `password` field).
+
+**Errors:**
+- `400 Bad Request`: plain text `Player not found.` or `Level up failed: either maximum level reached or incorrect password.` (these two distinct failure modes share one message)
+- `500 Internal Server Error`: plain text error
+
+---
+
+### GET /api/player/knowledge/{playerId}
+Get everything a player's knowledge book knows about ingredient effects.
+
+**Response `200`:**
+```json
+[
+  {
+    "ingredientId": 1,
+    "ingredientName": "Moonpetal",
+    "effects": [ { "id": 3, "title": "Clarity", "description": "..." } ]
+  }
+]
+```
+`ingredientName` is resolved by scanning the player's own inventory; if the ingredient isn't in their inventory it falls back to `"Unknown Ingredient"`.
+
+**Errors:**
+- `404 Not Found`: knowledge book or inventory is null (empty body)
+- `500 Internal Server Error`: plain text error
+
+---
+
+## Alchemy Potion Brewing
+
+**Path prefix:** `/api/potion`
+
+**No auth enforced.**
+
+### POST /api/potion/brew
+Brew a potion from two ingredients in the player's inventory.
+
+**Request:**
+```json
+{ "playerId": 1, "ingredientId1": 3, "ingredientId2": 7 }
+```
+Both ingredients must already be present in the player's inventory (looked up there, not from a global catalog).
+
+**Response `200`:**
+```json
+{
+  "message": "Potion brewed successfully",
+  "potion": {
+    "id": 12,
+    "name": "Elixir of Focus",
+    "effects": [ { "id": 3, "title": "Clarity", "description": "..." } ],
+    "ingredient1": { "...ingredient object..." },
+    "ingredient2": { "...ingredient object..." },
+    "duration": 10.0,
+    "description": "...",
+    "brewLevel": 2,
+    "dice": "1d6"
+  }
+}
+```
+
+**Errors:**
+- `400 Bad Request`: plain text `Invalid ingredient selection.` (either ingredient not found in the player's inventory) or `Potion brewing failed.` (brew logic returned no result)
+- `500 Internal Server Error`: plain text `Error brewing potion: ...`
+
+---
+
+## Alchemy Game Lifecycle
+
+**Path prefix:** `/api/game`
+
+**No auth enforced.** Per an in-code comment, these endpoints "aren't used very much yet" — treat as low-priority/legacy relative to Holdfast Management.
+
+### POST /api/game/start
+Start the (global) game session.
+
+**Response `200`:** plain text `Game started.`  
+**Response `500`:** plain text `Error starting game: ...`
+
+---
+
+### POST /api/game/end
+End the (global) game session.
+
+**Response `200`:** plain text `Game ended.`  
+**Response `500`:** plain text `Error ending game: ...`
+
+---
+
+### GET /api/game/forage/{playerId}
+Duplicate of `GET /api/player/forage/{playerId}`, but returns plain text instead of JSON and has no explicit "nothing to forage" check.
+
+**Response `200`:** plain text `Foraged ingredient: <name>`  
+**Response `500`:** plain text `Error during foraging: ...`
+
+---
+
 ## Error Responses
 
-All endpoints follow consistent error response format:
+The shapes below are the dominant pattern (Media, Chunked Upload, Async Download Queue, Playback Position, Push, Notifications, Events, most Playlist/LiveStream error paths), but they are **not universal**. A number of controllers return **plain text** error bodies instead of JSON, notably: Lexicon's `/api/auth/*`, Alchemy's `/api/auth/*`, and nearly everything in the Alchemy server (`/api/holdfast/*` except `build`/`advance`, `/api/player/*`, `/api/potion/*`, `/api/game/*`). Playlist/Message/StreamingMedia mutation endpoints often return a bare plain-text success/failure string on the 200 path too (e.g. `"Item added to playlist"`) rather than a JSON object. When integrating, check `Content-Type` on the response rather than assuming JSON.
 
 ### 400 Bad Request
 ```json
@@ -2416,9 +3539,10 @@ allowedOriginPatterns.add("https://your-domain\.com");
 
 ### 5. Real-Time Updates
 - Use SSE endpoints for live updates:
-  - `/api/livestream/updates` - Full stream updates
+  - `/api/livestream/updates?channel=video|music` - Full stream updates (per-channel)
   - `/api/media/chunked/progress/{uploadId}` - Chunk upload progress
   - `/api/playlists/import-progress/{importId}` - Playlist import progress
+  - `/api/notifications/stream?userId={userId}` - Live in-app notification delivery
 
 ### 6. Media Streaming
 - Use `/api/media/stream/{id}` for basic streaming
