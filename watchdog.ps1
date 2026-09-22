@@ -7,6 +7,10 @@ $logsDir = Join-Path $BASE_DIR "logs"
 $logFile = Join-Path $logsDir "watchdog.log"
 $checkInterval = 30  # seconds between checks
 
+# Destination registry (the ONE place ports/hosts come from) - see scripts/env.ps1.
+. (Join-Path $BASE_DIR "scripts\env.ps1")
+$env:MASTER_ENV_FILE = Join-Path $BASE_DIR ".env"
+
 function Write-Log($msg) {
     $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     "$ts  $msg" | Out-File -Append -FilePath $logFile
@@ -56,6 +60,10 @@ Write-Log "Watchdog started. Checking every ${checkInterval}s."
 while ($true) {
     Start-Sleep -Seconds $checkInterval
 
+    # Re-read the registry each loop so an edit to .env takes effect on the
+    # watchdog's own next check without needing a restart of the watchdog itself.
+    $cfg = Get-RegistryConfig -BaseDir $BASE_DIR
+
     $needsRestart = $false
 
     # Check ext4 HDD
@@ -103,10 +111,11 @@ while ($true) {
 
     # Check critical ports
     $services = @(
-        @{ Name = "HSQLDB";        Port = 9002  },
-        @{ Name = "AlchemyServer"; Port = 8080  },
-        @{ Name = "LexiconServer"; Port = 36568 },
-        @{ Name = "Frontend";      Port = 3001  }
+        @{ Name = "HSQLDB";        Port = [int]$cfg.DB_PORT },
+        @{ Name = "AlchemyServer"; Port = [int]$cfg.ALCHEMY_PORT },
+        @{ Name = "LexiconServer"; Port = [int]$cfg.LEXICON_PORT },
+        @{ Name = "PokemonServer"; Port = [int]$cfg.POKEMON_PORT },
+        @{ Name = "Frontend";      Port = [int]$cfg.FRONTEND_PORT }
     )
 
     foreach ($svc in $services) {
@@ -121,28 +130,34 @@ while ($true) {
     # restart-all, and taking the website, media server and tunnels down because a voice
     # daemon died would be a far worse outage than the one being fixed.
     $lexiPython = Join-Path $BASE_DIR "Lexi\.venv\Scripts\python.exe"
-    if ((Test-Path $lexiPython) -and -not (Test-Port 8765)) {
-        Write-Log "ALERT: Lexi not listening on port 8765 - restarting it"
+    if ((Test-Path $lexiPython) -and -not (Test-Port $cfg.LEXI_PORT)) {
+        Write-Log "ALERT: Lexi not listening on port $($cfg.LEXI_PORT) - restarting it"
         $lexiDir = Join-Path $BASE_DIR "Lexi"
         $lexiLog = Join-Path $logsDir "lexi.log"
         Start-Process -FilePath "cmd.exe" `
-            -ArgumentList "/c `"cd /d $lexiDir && `"$lexiPython`" -m lexi.server --host 127.0.0.1 --port 8765 >> `"$lexiLog`" 2>&1`"" `
+            -ArgumentList "/c `"cd /d $lexiDir && `"$lexiPython`" -m lexi.server --stt --host $($cfg.LEXI_HOST) --port $($cfg.LEXI_PORT) >> `"$lexiLog`" 2>&1`"" `
             -WindowStyle Hidden -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 10
-        if (Test-Port 8765) {
+        if (Test-Port $cfg.LEXI_PORT) {
             Write-Log "Lexi restarted"
         } else {
             Write-Log "WARNING: Lexi still not listening after restart attempt (see logs\lexi.log)"
         }
     }
 
-    # Check PlayIt tunnel
+    # Check PlayIt tunnel (redundancy only)
     $playitProc = Get-Process -Name "playit" -ErrorAction SilentlyContinue
     if (-not $playitProc) {
         Write-Log "ALERT: PlayIt not running - restarting"
         $playit = "C:\Program Files\playit_gg\bin\playit.exe"
         if (Test-Path $playit) {
-            Start-Process -FilePath $playit -WindowStyle Hidden -ErrorAction SilentlyContinue
+            # "start" runs headless; the bare exe launches an interactive TUI that
+            # fills the redirected log with ANSI escape codes (see restart-all.ps1).
+            $playitLog = Join-Path $logsDir "playit.log"
+            Start-Process -FilePath $playit -ArgumentList "start" `
+                -RedirectStandardOutput $playitLog `
+                -RedirectStandardError (Join-Path $logsDir "playit-err.log") `
+                -WindowStyle Hidden -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 3
             Write-Log "PlayIt restarted"
         }
