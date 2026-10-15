@@ -18,3 +18,7 @@
 	path = Lexi
 	url = git@github.com:ablepacifist/Lexi.git
 	branch = main
+[submodule "myRustDeck"]
+	path = myRustDeck
+	url = https://github.com/ablepacifist/myRustDeck.git
+	branch = main

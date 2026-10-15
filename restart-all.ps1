@@ -53,9 +53,10 @@ Get-Process -Name "java" -ErrorAction SilentlyContinue | ForEach-Object {
 }
 
 # Kill node/serve/python processes on our ports (8765 is Lexi's voice daemon, a python process)
+$rustdeckWebPort = 3002
 $ports = @(
     [int]$cfg.FRONTEND_PORT, [int]$cfg.ALCHEMY_PORT, [int]$cfg.POKEMON_PORT,
-    [int]$cfg.LEXICON_PORT, [int]$cfg.DB_PORT, [int]$cfg.LEXI_PORT
+    [int]$cfg.LEXICON_PORT, [int]$cfg.DB_PORT, [int]$cfg.LEXI_PORT, $rustdeckWebPort
 )
 foreach ($port in $ports) {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
@@ -307,6 +308,17 @@ if ($frontendCheck) {
     Write-Host "  Frontend started on port $($cfg.FRONTEND_PORT)" -ForegroundColor Green
 } else {
     Write-Host "  WARNING: Frontend may still be starting (check logs\frontend.log)" -ForegroundColor Yellow
+}
+
+# ----- RustDesk web client (static site -> web.alex-dyakin.com via tunnel) -----
+$rustdeckDist = Join-Path $BASE_DIR "myRustDeck\dist"
+if (Test-Path $rustdeckDist) {
+    Write-Host "`nStarting RustDesk web client..." -ForegroundColor Cyan
+    Start-Process -FilePath "node" `
+        -ArgumentList "`"$(Join-Path $BASE_DIR 'myRustDeck\scripts\serve.js')`"", "$rustdeckWebPort" `
+        -WindowStyle Hidden
+} else {
+    Write-Host "`nRustDesk web client not built (run: node myRustDeck\scripts\build.js)" -ForegroundColor Yellow
 }
 
 # ----- Cloudflare Tunnel (Windows Service — auto-start, auto-restart on failure) -----
