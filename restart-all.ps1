@@ -369,31 +369,11 @@ if ($cfService) {
     Write-Host "`nCloudflare Tunnel: service not installed, skipping" -ForegroundColor Yellow
 }
 
-# ----- Start PlayIt Tunnel (redundancy only) -----
-$playit = "C:\Program Files\playit_gg\bin\playit.exe"
-if (Test-Path $playit) {
-    # Kill existing playit (both the service-launched and any manually started copy)
-    Get-Process -Name "playit" -ErrorAction SilentlyContinue | ForEach-Object {
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-    }
-    Start-Sleep -Seconds 1
-    Write-Host "`nStarting PlayIt Tunnel..." -ForegroundColor Cyan
-    $playitLog = Join-Path $logsDir "playit.log"
-    # "start" runs the agent headless; the bare exe (no subcommand) launches
-    # playit's interactive TUI dashboard, which - when stdout is redirected to
-    # a file instead of a real terminal - fills the log with raw ANSI escape
-    # codes indefinitely (this grew logs\playit.log to 50+MB). The stored
-    # secret (see: playit.exe secret-path) is reused automatically; nothing
-    # secret is passed on this command line.
-    Start-Process -FilePath $playit `
-        -ArgumentList "start" `
-        -RedirectStandardOutput $playitLog `
-        -RedirectStandardError (Join-Path $logsDir "playit-err.log") `
-        -WindowStyle Hidden
-    Start-Sleep -Seconds 3
-    Write-Host "  PlayIt Tunnel started" -ForegroundColor Green
-} else {
-    Write-Host "`nPlayIt: not found, skipping" -ForegroundColor Yellow
+# ----- PlayIt Tunnel: retired -----
+# The plain-HTTP PlayIt fallback was removed (cookies and passwords crossed the internet
+# unencrypted). Public access is the Cloudflare tunnels only. Stop any copy still running.
+Get-Process -Name "playit" -ErrorAction SilentlyContinue | ForEach-Object {
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
 }
 
 # ----- Summary -----
@@ -433,12 +413,6 @@ Write-Host "  LexiconServer:  $($cfg.PUBLIC_LEXICON_URL)"
 Write-Host "  AlchemyServer:  $($cfg.PUBLIC_ALCHEMY_URL)"
 Write-Host "  PokemonServer:  $($cfg.PUBLIC_POKEMON_URL)"
 
-Write-Host "`nPlayIt fallback (secondary, kept for redundancy - IPs are tunnel-session-assigned and may be stale; confirm on the playit.gg dashboard):" -ForegroundColor DarkGray
-Write-Host "  PlayIt Frontend: http://$($cfg.PLAYIT_HOST):$($cfg.PLAYIT_FRONTEND_PORT)" -ForegroundColor DarkGray
-Write-Host "  PlayIt Alchemy:  http://$($cfg.PLAYIT_HOST):$($cfg.PLAYIT_ALCHEMY_PORT)" -ForegroundColor DarkGray
-Write-Host "  PlayIt Lexicon:  http://$($cfg.PLAYIT_HOST):$($cfg.PLAYIT_LEXICON_PORT)" -ForegroundColor DarkGray
-Write-Host "  PlayIt Pokemon:  http://$($cfg.PLAYIT_HOST):$($cfg.PLAYIT_POKEMON_PORT)" -ForegroundColor DarkGray
-
 Write-Host "`nLogs:" -ForegroundColor Cyan
 Write-Host "  Get-Content -Wait logs\database.log"
 Write-Host "  Get-Content -Wait logs\alchemy.log"
@@ -446,5 +420,4 @@ Write-Host "  Get-Content -Wait logs\lexicon.log"
 Write-Host "  Get-Content -Wait logs\lexi.log"
 Write-Host "  Get-Content -Wait logs\pokemon.log"
 Write-Host "  Get-Content -Wait logs\frontend.log"
-Write-Host "  Get-Content -Wait logs\playit.log"
 Write-Host ""

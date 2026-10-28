@@ -145,24 +145,6 @@ while ($true) {
         }
     }
 
-    # Check PlayIt tunnel (redundancy only)
-    $playitProc = Get-Process -Name "playit" -ErrorAction SilentlyContinue
-    if (-not $playitProc) {
-        Write-Log "ALERT: PlayIt not running - restarting"
-        $playit = "C:\Program Files\playit_gg\bin\playit.exe"
-        if (Test-Path $playit) {
-            # "start" runs headless; the bare exe launches an interactive TUI that
-            # fills the redirected log with ANSI escape codes (see restart-all.ps1).
-            $playitLog = Join-Path $logsDir "playit.log"
-            Start-Process -FilePath $playit -ArgumentList "start" `
-                -RedirectStandardOutput $playitLog `
-                -RedirectStandardError (Join-Path $logsDir "playit-err.log") `
-                -WindowStyle Hidden -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
-            Write-Log "PlayIt restarted"
-        }
-    }
-
     if ($needsRestart) {
         Write-Log "Running restart-all.ps1 ..."
         try {

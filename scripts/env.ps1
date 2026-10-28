@@ -37,11 +37,6 @@ function Get-RegistryConfig {
         PUBLIC_POKEMON_URL            = "https://poke.alex-dyakin.com"
         PUBLIC_BRIDGE_URL             = "https://voice.alex-dyakin.com"
         PUBLIC_BRAIN_URL              = "https://llm.alex-dyakin.com"
-        PLAYIT_HOST                   = "209.25.140.16"
-        PLAYIT_FRONTEND_PORT          = "1796"
-        PLAYIT_ALCHEMY_PORT           = "1760"
-        PLAYIT_LEXICON_PORT           = "1792"
-        PLAYIT_POKEMON_PORT           = "1790"
     }
 
     $envFile = Join-Path $BaseDir ".env"
