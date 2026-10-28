@@ -124,7 +124,7 @@ foreach ($disk in $candidateDisks) {
 Write-Host "`nStarting HSQLDB..." -ForegroundColor Cyan
 $hsqldbLog = Join-Path $logsDir "database.log"
 Start-Process -FilePath "java" `
-    -ArgumentList "-cp", "lib\hsqldb.jar", "org.hsqldb.server.Server", "--database.0", "file:alchemydb", "--dbname.0", "mydb", "--port", "$($cfg.DB_PORT)" `
+    -ArgumentList "-cp", "lib\hsqldb.jar", "org.hsqldb.server.Server", "--database.0", "file:alchemydb", "--dbname.0", "mydb", "--port", "$($cfg.DB_PORT)", "--address", "127.0.0.1" `
     -WorkingDirectory (Join-Path $BASE_DIR "alchemyServer") `
     -RedirectStandardOutput $hsqldbLog `
     -RedirectStandardError (Join-Path $logsDir "database-err.log") `
@@ -136,9 +136,23 @@ Start-Sleep -Seconds 5
 # Verify HSQLDB is running
 $dbCheck = Get-NetTCPConnection -LocalPort $cfg.DB_PORT -State Listen -ErrorAction SilentlyContinue
 if ($dbCheck) {
-    Write-Host "  HSQLDB started on port $($cfg.DB_PORT)" -ForegroundColor Green
+    Write-Host "  HSQLDB started on port $($cfg.DB_PORT) (127.0.0.1 only)" -ForegroundColor Green
 } else {
     Write-Host "  WARNING: HSQLDB may not have started!" -ForegroundColor Red
+}
+
+# Make sure the database's SA account has the password from DATABASE_PASSWORD in .env. Does nothing
+# when that key is absent, and is safe to repeat. The three servers read the same key from .env.
+if ($cfg.Contains("DATABASE_PASSWORD") -and $cfg.DATABASE_PASSWORD) {
+    $env:DATABASE_URL = $cfg.DATABASE_URL
+    $env:DATABASE_PASSWORD = $cfg.DATABASE_PASSWORD
+    Push-Location (Join-Path $BASE_DIR "alchemyServer")
+    & java -cp "lib\hsqldb.jar" (Join-Path $BASE_DIR "scripts\HsqlEnsurePassword.java")
+    $pwExit = $LASTEXITCODE
+    Pop-Location
+    if ($pwExit -ne 0) {
+        Write-Host "  WARNING: could not apply the database password (exit $pwExit); the servers may fail to connect." -ForegroundColor Red
+    }
 }
 
 # ----- Start AlchemyServer -----
