@@ -51,3 +51,6 @@ uploads/
 # Temporary files
 *.tmp
 cookies.txt
+
+# Local assistant instructions (not part of the project)
+CLAUDE.md
