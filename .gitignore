@@ -54,3 +54,13 @@ cookies.txt
 
 # Local assistant instructions (not part of the project)
 CLAUDE.md
+
+# Backups, release artefacts and signing material never belong in git
+db-backup/
+*.tar.gz
+releases/
+*.apk
+*.jks
+*.keystore
+# Stray folder some upload code creates when a value is missing
+**/null/

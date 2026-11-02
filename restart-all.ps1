@@ -312,7 +312,7 @@ if ($needsFrontendBuild) {
 }
 
 Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c `"cd /d $frontendDir && npx serve -s build -l tcp://0.0.0.0:$($cfg.FRONTEND_PORT) > `"$frontendLog`" 2>&1`"" `
+    -ArgumentList "/c `"cd /d $frontendDir && npx --yes serve@14.2.6 -s build -l tcp://0.0.0.0:$($cfg.FRONTEND_PORT) > `"$frontendLog`" 2>&1`"" `
     -WindowStyle Hidden
 
 Start-Sleep -Seconds 5
