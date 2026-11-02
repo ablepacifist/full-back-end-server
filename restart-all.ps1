@@ -1,5 +1,10 @@
 # Restart all Lexicon services on Windows
 # Usage: .\restart-all.ps1
+#        .\restart-all.ps1 -DryRun   (resolve and print the registry config, start nothing)
+
+param(
+    [switch]$DryRun
+)
 
 $ErrorActionPreference = "Continue"
 
@@ -13,19 +18,46 @@ $env:Path = "$env:JAVA_HOME\bin;$env:Path"
 # Get base directory
 $BASE_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 
+# ----- Destination registry (the ONE place ports/hosts/IPs come from) -------
+# See scripts/env.ps1 and .env.example. Every module (Java, Lexi, the web
+# clients, Android) reads the same $BASE_DIR\.env; this loads it for the
+# orchestration script itself. MASTER_ENV_FILE is exported so every child
+# process this script starts finds the same file regardless of its own
+# working directory, per each module's own layered-config loader.
+. (Join-Path $BASE_DIR "scripts\env.ps1")
+$cfg = Get-RegistryConfig -BaseDir $BASE_DIR
+$env:MASTER_ENV_FILE = Join-Path $BASE_DIR ".env"
+
+if ($DryRun) {
+    Write-Host "`n=== Resolved destination registry (dry run - nothing started) ===" -ForegroundColor Cyan
+    foreach ($key in $cfg.Keys) {
+        $val = $cfg[$key]
+        if ($key -match 'TOKEN|SECRET|PASSWORD|VAPID_PRIVATE') { $val = "<masked>" }
+        Write-Host ("  {0,-24} = {1}" -f $key, $val)
+    }
+    Write-Host ""
+    Test-CloudflaredIngress -Cfg $cfg
+    Write-Host "`n(dry run: no services were stopped or started)" -ForegroundColor Yellow
+    exit 0
+}
+
 Write-Host "`n=== Restarting Full Back-End Server ===" -ForegroundColor Cyan
 
 # ----- Stop all services -----
 Write-Host "`nStopping all services..." -ForegroundColor Red
 
-# Kill Java processes (alchemy, lexicon, hsqldb)
+# Kill Java processes (alchemy, lexicon, pokemon, hsqldb)
 Get-Process -Name "java" -ErrorAction SilentlyContinue | ForEach-Object {
     Write-Host "  Stopping java PID $($_.Id)..." -ForegroundColor Yellow
     Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
 }
 
-# Kill node/serve processes on our ports
-$ports = @(3001, 8080, 36568, 9002)
+# Kill node/serve/python processes on our ports (8765 is Lexi's voice daemon, a python process)
+$rustdeckWebPort = 3002
+$ports = @(
+    [int]$cfg.FRONTEND_PORT, [int]$cfg.ALCHEMY_PORT, [int]$cfg.POKEMON_PORT,
+    [int]$cfg.LEXICON_PORT, [int]$cfg.DB_PORT, [int]$cfg.LEXI_PORT, $rustdeckWebPort
+)
 foreach ($port in $ports) {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conn) {
@@ -56,27 +88,43 @@ if ($wslCheck -match "OK") {
     Write-Host "  WARNING: WSL Ubuntu may not be running!" -ForegroundColor Red
 }
 
-# ----- Mount ext4 HDD via WSL (if not already mounted) -----
-$hddPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage"
-if (-not (Test-Path $hddPath)) {
-    Write-Host "`nMounting ext4 HDD..." -ForegroundColor Cyan
-    # Use wsl --mount (handles device letter changes between reboots)
-    Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE1", "--partition", "2", "--type", "ext4" -Verb RunAs -Wait -PassThru
-    Start-Sleep -Seconds 3
-    if (Test-Path $hddPath) {
-        Write-Host "  ext4 HDD mounted successfully" -ForegroundColor Green
-    } else {
-        Write-Host "  WARNING: ext4 HDD mount FAILED! Storage features will not work." -ForegroundColor Red
+# ----- Mount all ext4 media HDDs via WSL (auto-detects any drive, any partition) -----
+Write-Host "`nScanning for ext4 media drives to mount into WSL..." -ForegroundColor Cyan
+
+$linuxDataGuid = "{0fc63daf-8483-4772-8e79-3d69d8477de4}"  # GPT "Linux filesystem data" type
+$candidateDisks = Get-Disk | Where-Object { -not $_.IsSystem }  # excludes the Windows OS disk
+
+foreach ($disk in $candidateDisks) {
+    $linuxPartitions = Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue |
+        Where-Object { $_.GptType -eq $linuxDataGuid }
+
+    if (-not $linuxPartitions) {
+        Write-Host "  Disk $($disk.Number) ($($disk.FriendlyName)): no ext4/Linux partition found, skipping" -ForegroundColor Gray
+        continue
     }
-} else {
-    Write-Host "`next4 HDD already mounted" -ForegroundColor Green
+
+    foreach ($part in $linuxPartitions) {
+        $mountPath = "\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE$($disk.Number)p$($part.PartitionNumber)"
+        if (Test-Path $mountPath) {
+            Write-Host "  Disk $($disk.Number) partition $($part.PartitionNumber) already mounted" -ForegroundColor Green
+            continue
+        }
+        Write-Host "  Mounting Disk $($disk.Number) partition $($part.PartitionNumber) (ext4)..." -ForegroundColor Cyan
+        Start-Process -FilePath "wsl" -ArgumentList "--mount", "\\.\PHYSICALDRIVE$($disk.Number)", "--partition", "$($part.PartitionNumber)", "--type", "ext4" -Verb RunAs -Wait -PassThru
+        Start-Sleep -Seconds 3
+        if (Test-Path $mountPath) {
+            Write-Host "  Mounted successfully at $mountPath" -ForegroundColor Green
+        } else {
+            Write-Host "  WARNING: mount FAILED for Disk $($disk.Number) partition $($part.PartitionNumber)" -ForegroundColor Red
+        }
+    }
 }
 
 # ----- Start HSQLDB -----
 Write-Host "`nStarting HSQLDB..." -ForegroundColor Cyan
 $hsqldbLog = Join-Path $logsDir "database.log"
 Start-Process -FilePath "java" `
-    -ArgumentList "-cp", "lib\hsqldb.jar", "org.hsqldb.server.Server", "--database.0", "file:alchemydb", "--dbname.0", "mydb", "--port", "9002" `
+    -ArgumentList "-cp", "lib\hsqldb.jar", "org.hsqldb.server.Server", "--database.0", "file:alchemydb", "--dbname.0", "mydb", "--port", "$($cfg.DB_PORT)", "--address", "127.0.0.1" `
     -WorkingDirectory (Join-Path $BASE_DIR "alchemyServer") `
     -RedirectStandardOutput $hsqldbLog `
     -RedirectStandardError (Join-Path $logsDir "database-err.log") `
@@ -86,14 +134,32 @@ Write-Host "  Waiting for database..." -ForegroundColor Gray
 Start-Sleep -Seconds 5
 
 # Verify HSQLDB is running
-$dbCheck = Get-NetTCPConnection -LocalPort 9002 -State Listen -ErrorAction SilentlyContinue
+$dbCheck = Get-NetTCPConnection -LocalPort $cfg.DB_PORT -State Listen -ErrorAction SilentlyContinue
 if ($dbCheck) {
-    Write-Host "  HSQLDB started on port 9002" -ForegroundColor Green
+    Write-Host "  HSQLDB started on port $($cfg.DB_PORT) (127.0.0.1 only)" -ForegroundColor Green
 } else {
     Write-Host "  WARNING: HSQLDB may not have started!" -ForegroundColor Red
 }
 
+# Make sure the database's SA account has the password from DATABASE_PASSWORD in .env. Does nothing
+# when that key is absent, and is safe to repeat. The three servers read the same key from .env.
+if ($cfg.Contains("DATABASE_PASSWORD") -and $cfg.DATABASE_PASSWORD) {
+    $env:DATABASE_URL = $cfg.DATABASE_URL
+    $env:DATABASE_PASSWORD = $cfg.DATABASE_PASSWORD
+    Push-Location (Join-Path $BASE_DIR "alchemyServer")
+    & java -cp "lib\hsqldb.jar" (Join-Path $BASE_DIR "scripts\HsqlEnsurePassword.java")
+    $pwExit = $LASTEXITCODE
+    Pop-Location
+    if ($pwExit -ne 0) {
+        Write-Host "  WARNING: could not apply the database password (exit $pwExit); the servers may fail to connect." -ForegroundColor Red
+    }
+}
+
 # ----- Start AlchemyServer -----
+# Reads $BASE_DIR\.env itself now (spring.config.import: module .env < ../.env
+# < $env:MASTER_ENV_FILE, see alchemyServer/src/main/resources/application.properties)
+# — nothing needs to be injected here beyond JAVA_HOME and the inherited
+# MASTER_ENV_FILE set above.
 Write-Host "`nStarting AlchemyServer..." -ForegroundColor Cyan
 $alchemyLog = Join-Path $logsDir "alchemy.log"
 Start-Process -FilePath "cmd.exe" `
@@ -101,62 +167,192 @@ Start-Process -FilePath "cmd.exe" `
     -WindowStyle Hidden
 
 Write-Host "  Waiting for AlchemyServer to start..." -ForegroundColor Gray
-for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue) { break } }
+for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort $cfg.ALCHEMY_PORT -State Listen -ErrorAction SilentlyContinue) { break } }
 
-$alchemyCheck = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+$alchemyCheck = Get-NetTCPConnection -LocalPort $cfg.ALCHEMY_PORT -State Listen -ErrorAction SilentlyContinue
 if ($alchemyCheck) {
-    Write-Host "  AlchemyServer started on port 8080" -ForegroundColor Green
+    Write-Host "  AlchemyServer started on port $($cfg.ALCHEMY_PORT)" -ForegroundColor Green
 } else {
     Write-Host "  WARNING: AlchemyServer may still be starting (check logs\alchemy.log)" -ForegroundColor Yellow
 }
 
 # ----- Start LexiconServer -----
+# Same story as Alchemy: reads $BASE_DIR\.env itself via spring.config.import.
 Write-Host "`nStarting LexiconServer..." -ForegroundColor Cyan
 $lexiconLog = Join-Path $logsDir "lexicon.log"
+
 Start-Process -FilePath "cmd.exe" `
     -ArgumentList "/c `"set JAVA_HOME=$env:JAVA_HOME&& cd /d $BASE_DIR\lexiconServer && gradlew.bat bootRun > `"$lexiconLog`" 2>&1`"" `
     -WindowStyle Hidden
 
 Write-Host "  Waiting for LexiconServer to start..." -ForegroundColor Gray
-for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort 36568 -State Listen -ErrorAction SilentlyContinue) { break } }
+for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort $cfg.LEXICON_PORT -State Listen -ErrorAction SilentlyContinue) { break } }
 
-$lexiconCheck = Get-NetTCPConnection -LocalPort 36568 -State Listen -ErrorAction SilentlyContinue
+$lexiconCheck = Get-NetTCPConnection -LocalPort $cfg.LEXICON_PORT -State Listen -ErrorAction SilentlyContinue
 if ($lexiconCheck) {
-    Write-Host "  LexiconServer started on port 36568" -ForegroundColor Green
+    Write-Host "  LexiconServer started on port $($cfg.LEXICON_PORT)" -ForegroundColor Green
 } else {
     Write-Host "  WARNING: LexiconServer may still be starting (check logs\lexicon.log)" -ForegroundColor Yellow
+}
+
+# ----- Start Lexi (voice daemon) -----
+# Turns a recorded clip into a spoken answer: speech-to-text here on aragon, the text to
+# Obrenna on alison, and the reply spoken with Piper. LexiconServer's /api/voice endpoints
+# relay to it, which is what makes the website's voice assistant page work.
+#
+# Runs in --stt mode so the Pi / alison can reach /stt over the LAN (the browser /turn app
+# has no /stt endpoint). Bind host/port come from the registry (LEXI_HOST/LEXI_PORT); every
+# call is guarded by the bearer tool token, and the Windows firewall rule for 8765 is already
+# in place. Lexi reads the same $BASE_DIR\.env itself (see Lexi/lexi/config.py), so the
+# secrets in .tool_token/.agent_token stay local to the Lexi directory and nothing secret
+# needs to be passed on this command line.
+# Note: the venv python.exe is a launcher that spawns the real interpreter, so two python
+# processes (parent + child) for one Lexi is normal, not a double launch.
+Write-Host "`nStarting Lexi (voice daemon)..." -ForegroundColor Cyan
+$lexiDir = Join-Path $BASE_DIR "Lexi"
+$lexiPython = Join-Path $lexiDir ".venv\Scripts\python.exe"
+$lexiLog = Join-Path $logsDir "lexi.log"
+
+if (Test-Path $lexiPython) {
+    Start-Process -FilePath "cmd.exe" `
+        -ArgumentList "/c `"cd /d $lexiDir && `"$lexiPython`" -m lexi.server --stt --host $($cfg.LEXI_HOST) --port $($cfg.LEXI_PORT) > `"$lexiLog`" 2>&1`"" `
+        -WindowStyle Hidden
+
+    Write-Host "  Waiting for Lexi to start..." -ForegroundColor Gray
+    for ($i = 0; $i -lt 30; $i++) { Start-Sleep 1; if (Get-NetTCPConnection -LocalPort $cfg.LEXI_PORT -State Listen -ErrorAction SilentlyContinue) { break } }
+
+    if (Get-NetTCPConnection -LocalPort $cfg.LEXI_PORT -State Listen -ErrorAction SilentlyContinue) {
+        # The speech models load on the first request, not now, so the first voice turn
+        # after a restart is slower than the ones after it.
+        Write-Host "  Lexi started on port $($cfg.LEXI_PORT) (--stt, $($cfg.LEXI_HOST))" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: Lexi did not start (check logs\lexi.log)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "  Lexi: no virtualenv at Lexi\.venv, skipping" -ForegroundColor Yellow
+    Write-Host "    Create it with: cd Lexi; python -m venv .venv; .venv\Scripts\pip install -e `".[engines]`"" -ForegroundColor DarkGray
+}
+
+# ----- Start PokemonServer -----
+Write-Host "`nStarting PokemonServer..." -ForegroundColor Cyan
+$pokemonLog  = Join-Path $logsDir "pokemon.log"
+$pokemonJar  = Join-Path $BASE_DIR "pokemon\pokemon\pokemonServer\build\libs\pokemonServer-1.0.0.jar"
+$pokemonSrc  = Join-Path $BASE_DIR "pokemon\pokemon\pokemonServer\src"
+$pokemonBuild = Join-Path $BASE_DIR "pokemon\pokemon\pokemonServer"
+
+$rebuildNeeded = $false
+if (-not (Test-Path $pokemonJar)) {
+    $rebuildNeeded = $true
+    Write-Host "  No JAR found - building..." -ForegroundColor Yellow
+} else {
+    $jarTime = (Get-Item $pokemonJar).LastWriteTime
+    $newerFile = Get-ChildItem -Path $pokemonSrc -Recurse -Include "*.java","*.properties" -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -gt $jarTime } | Select-Object -First 1
+    if ($newerFile) {
+        $rebuildNeeded = $true
+        Write-Host "  Source changes detected ($($newerFile.Name)) - rebuilding JAR..." -ForegroundColor Yellow
+        Remove-Item $pokemonJar -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if ($rebuildNeeded) {
+    Push-Location $pokemonBuild
+    & ".\gradlew.bat" clean build 2>&1 | Out-Null
+    Pop-Location
+    if (Test-Path $pokemonJar) {
+        Write-Host "  JAR built successfully" -ForegroundColor Green
+    } else {
+        Write-Host "  WARNING: JAR build may have failed - check source for errors" -ForegroundColor Red
+    }
+}
+
+# Reads $BASE_DIR\.env itself now (spring.config.import, same as the other two
+# Spring servers) — run from its own directory so its "../../../.env" layer
+# resolves, with $env:MASTER_ENV_FILE (set above) as the reliable fallback
+# regardless of working directory.
+Start-Process -FilePath "cmd.exe" `
+    -ArgumentList "/c `"cd /d $pokemonBuild && java -jar `"$pokemonJar`" > `"$pokemonLog`" 2>&1`"" `
+    -WindowStyle Hidden
+
+Write-Host "  Waiting for PokemonServer to start..." -ForegroundColor Gray
+for ($i = 0; $i -lt 60; $i++) { Start-Sleep 2; if (Get-NetTCPConnection -LocalPort $cfg.POKEMON_PORT -State Listen -ErrorAction SilentlyContinue) { break } }
+
+$pokemonCheck = Get-NetTCPConnection -LocalPort $cfg.POKEMON_PORT -State Listen -ErrorAction SilentlyContinue
+if ($pokemonCheck) {
+    Write-Host "  PokemonServer started on port $($cfg.POKEMON_PORT)" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: PokemonServer may still be starting (check logs\pokemon.log)" -ForegroundColor Yellow
 }
 
 # ----- Start Frontend -----
 Write-Host "`nStarting Frontend..." -ForegroundColor Cyan
 $frontendDir = Join-Path $BASE_DIR "Lexicon"
+$frontendBuildDir = Join-Path $frontendDir "build"
 $frontendLog = Join-Path $logsDir "frontend.log"
 
-# Build if no build folder
-if (-not (Test-Path (Join-Path $frontendDir "build"))) {
-    Write-Host "  Building React app first..." -ForegroundColor Yellow
+# Build if there's no build folder, OR if .env changed more recently than the
+# last build (destinations.json is baked in at build time by
+# scripts/sync-destinations.js, wired as a prebuild step — a stale build
+# would otherwise keep serving old ports/hostnames after a registry change).
+$rootEnvFile = Join-Path $BASE_DIR ".env"
+$needsFrontendBuild = -not (Test-Path $frontendBuildDir)
+if (-not $needsFrontendBuild -and (Test-Path $rootEnvFile)) {
+    $envMtime = (Get-Item $rootEnvFile).LastWriteTime
+    $buildMtime = (Get-Item $frontendBuildDir).LastWriteTime
+    if ($envMtime -gt $buildMtime) {
+        Write-Host "  .env changed since the last build - rebuilding so the new destinations take effect" -ForegroundColor Yellow
+        $needsFrontendBuild = $true
+    }
+}
+if ($needsFrontendBuild) {
+    Write-Host "  Building React app..." -ForegroundColor Yellow
     Push-Location $frontendDir
     npm run build 2>&1 | Out-Null
     Pop-Location
 }
 
 Start-Process -FilePath "cmd.exe" `
-    -ArgumentList "/c `"cd /d $frontendDir && npx serve -s build -l tcp://0.0.0.0:3001 > `"$frontendLog`" 2>&1`"" `
+    -ArgumentList "/c `"cd /d $frontendDir && npx --yes serve@14.2.6 -s build -l tcp://0.0.0.0:$($cfg.FRONTEND_PORT) > `"$frontendLog`" 2>&1`"" `
     -WindowStyle Hidden
 
 Start-Sleep -Seconds 5
 
-$frontendCheck = Get-NetTCPConnection -LocalPort 3001 -State Listen -ErrorAction SilentlyContinue
+$frontendCheck = Get-NetTCPConnection -LocalPort $cfg.FRONTEND_PORT -State Listen -ErrorAction SilentlyContinue
 if ($frontendCheck) {
-    Write-Host "  Frontend started on port 3001" -ForegroundColor Green
+    Write-Host "  Frontend started on port $($cfg.FRONTEND_PORT)" -ForegroundColor Green
 } else {
     Write-Host "  WARNING: Frontend may still be starting (check logs\frontend.log)" -ForegroundColor Yellow
+}
+
+# ----- RustDesk web client (static site -> web.alex-dyakin.com via tunnel) -----
+$rustdeckDist = Join-Path $BASE_DIR "myRustDeck\dist"
+if (Test-Path $rustdeckDist) {
+    Write-Host "`nStarting RustDesk web client..." -ForegroundColor Cyan
+    Start-Process -FilePath "node" `
+        -ArgumentList "`"$(Join-Path $BASE_DIR 'myRustDeck\scripts\serve.js')`"", "$rustdeckWebPort" `
+        -WindowStyle Hidden
+} else {
+    Write-Host "`nRustDesk web client not built (run: node myRustDeck\scripts\build.js)" -ForegroundColor Yellow
 }
 
 # ----- Cloudflare Tunnel (Windows Service — auto-start, auto-restart on failure) -----
 $cfService = Get-Service -Name "Cloudflared" -ErrorAction SilentlyContinue
 if ($cfService) {
     Write-Host "`nRestarting Cloudflare Tunnel service..." -ForegroundColor Cyan
+
+    # The service runs as LocalSystem and reads config from the system profile.
+    # Sync our user-profile config into that location every restart so changes stick.
+    $userCfConfig = "C:\Users\HP\.cloudflared\config.yml"
+    $sysCfConfig  = "C:\Windows\System32\config\systemprofile\.cloudflared\config.yml"
+    if (Test-Path $userCfConfig) {
+        Start-Process powershell -ArgumentList "-Command",("Copy-Item '$userCfConfig' '$sysCfConfig' -Force") -Verb RunAs -Wait -ErrorAction SilentlyContinue
+        Write-Host "  Synced cloudflared config to LocalSystem profile" -ForegroundColor Gray
+    }
+
+    # cloudflared's ingress can't itself read .env (Cloudflare's own format),
+    # so this is the one place that can drift silently from the registry.
+    Test-CloudflaredIngress -Cfg $cfg
+
     if ($cfService.Status -ne 'Stopped') {
         Start-Process sc.exe -ArgumentList "stop","Cloudflared" -Verb RunAs -Wait -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 3
@@ -173,23 +369,11 @@ if ($cfService) {
     Write-Host "`nCloudflare Tunnel: service not installed, skipping" -ForegroundColor Yellow
 }
 
-# ----- Start PlayIt Tunnel -----
-$playit = "C:\Program Files\playit_gg\bin\playit.exe"
-if (Test-Path $playit) {
-    # Kill existing playit
-    Get-Process -Name "playit" -ErrorAction SilentlyContinue | ForEach-Object {
-        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-    }
-    Write-Host "`nStarting PlayIt Tunnel..." -ForegroundColor Cyan
-    $playitLog = Join-Path $logsDir "playit.log"
-    Start-Process -FilePath $playit `
-        -RedirectStandardOutput $playitLog `
-        -RedirectStandardError (Join-Path $logsDir "playit-err.log") `
-        -WindowStyle Hidden
-    Start-Sleep -Seconds 3
-    Write-Host "  PlayIt Tunnel started" -ForegroundColor Green
-} else {
-    Write-Host "`nPlayIt: not found, skipping" -ForegroundColor Yellow
+# ----- PlayIt Tunnel: retired -----
+# The plain-HTTP PlayIt fallback was removed (cookies and passwords crossed the internet
+# unencrypted). Public access is the Cloudflare tunnels only. Stop any copy still running.
+Get-Process -Name "playit" -ErrorAction SilentlyContinue | ForEach-Object {
+    Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
 }
 
 # ----- Summary -----
@@ -216,21 +400,24 @@ if (Test-Path $watchdogScript) {
 }
 
 Write-Host "`nLocal URLs:" -ForegroundColor Cyan
-Write-Host "  Frontend:       http://localhost:3001"
-Write-Host "  AlchemyServer:  http://localhost:8080"
-Write-Host "  LexiconServer:  http://localhost:36568"
-Write-Host "  Database:       localhost:9002"
+Write-Host "  Frontend:       http://localhost:$($cfg.FRONTEND_PORT)"
+Write-Host "  AlchemyServer:  http://localhost:$($cfg.ALCHEMY_PORT)"
+Write-Host "  LexiconServer:  http://localhost:$($cfg.LEXICON_PORT)"
+Write-Host "  PokemonServer:  http://localhost:$($cfg.POKEMON_PORT)"
+Write-Host "  Database:       localhost:$($cfg.DB_PORT)"
+Write-Host "  Lexi (STT):     http://localhost:$($cfg.LEXI_PORT)  (bound to $($cfg.LEXI_HOST), token-guarded /stt for the Pi / alison)"
 
-Write-Host "`nExternal URLs:" -ForegroundColor Cyan
-Write-Host "  Cloudflare:     https://alex-dyakin.com"
-Write-Host "  PlayIt Frontend: http://209.25.140.16:1796"
-Write-Host "  PlayIt Alchemy:  http://209.25.140.16:1760"
-Write-Host "  PlayIt Lexicon:  http://209.25.140.16:1792"
+Write-Host "`nExternal URLs (Cloudflare Tunnel - primary, works from any location):" -ForegroundColor Cyan
+Write-Host "  Frontend:       $($cfg.PUBLIC_FRONTEND_URL)"
+Write-Host "  LexiconServer:  $($cfg.PUBLIC_LEXICON_URL)"
+Write-Host "  AlchemyServer:  $($cfg.PUBLIC_ALCHEMY_URL)"
+Write-Host "  PokemonServer:  $($cfg.PUBLIC_POKEMON_URL)"
 
 Write-Host "`nLogs:" -ForegroundColor Cyan
 Write-Host "  Get-Content -Wait logs\database.log"
 Write-Host "  Get-Content -Wait logs\alchemy.log"
 Write-Host "  Get-Content -Wait logs\lexicon.log"
+Write-Host "  Get-Content -Wait logs\lexi.log"
+Write-Host "  Get-Content -Wait logs\pokemon.log"
 Write-Host "  Get-Content -Wait logs\frontend.log"
-Write-Host "  Get-Content -Wait logs\cloudflared.log"
 Write-Host ""

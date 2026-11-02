@@ -2,6 +2,8 @@
 
 Personal media server with audio/video streaming, chat, and file management.
 
+> **Cloudflare Tunnel (`alex-dyakin.com` and its subdomains) is the primary access method.** It's an outbound-only tunnel, so it survives moving this server to a new location/ISP with zero reconfiguration — just start the `Cloudflared` service and run `restart-all.ps1`. The PlayIt.gg IP-based setup described later in this doc (Step 2 onward) is a secondary fallback only, not required for normal operation.
+
 ## Repository Structure
 
 ```
@@ -30,10 +32,15 @@ All services share the same HSQLDB database for unified user management.
 - Audio/video streaming with HTTP range requests
 - Chunked file uploads (SHA-256 verified, async assembly)
 - Auto-retry audio playback with Bluetooth recovery
+- Next-track prefetch for locked-phone playback resilience
 - Lock screen media controls (Media Session API)
 - Live streaming (audio + video)
 - Playlist management
 - Audiobook player with position tracking
+- Auth-gated deep links for tracks/videos/audiobooks/playlists
+- Web Push notification backend endpoints (`/api/push/*`) for offline DM/mention alerts
+- SSO handoff endpoints (`/api/auth/sso/*`) for Lexicon -> Voice authentication
+- Voice Chat entry in Lexicon UI (Navbar + App Selector) with SSO redirect
 - Rich media chat
 
 ---
@@ -65,9 +72,9 @@ cd lexiconServer && git checkout dev && cd ..
 cd alchemyServer && git checkout dev && cd ..
 ```
 
-### Step 2: Configure Environment Variables
+### Step 2: Configure Environment Variables (PlayIt.gg fallback path — Cloudflare Tunnel is primary and needs none of this)
 
-**CRITICAL: You must use IP addresses, not PlayIt.gg hostnames for remote access!**
+**CRITICAL (for the PlayIt.gg fallback only): You must use IP addresses, not PlayIt.gg hostnames for remote access!**
 
 Both Java servers now support environment variable overrides. Create `.env` files:
 
@@ -111,6 +118,11 @@ DATABASE_URL=jdbc:hsqldb:hsql://localhost:9002/mydb
 
 # yt-dlp cookies (optional, for age-restricted content)
 YTDLP_COOKIES_PATH=./cookies.txt
+
+# Web Push (VAPID) — generate with: npx web-push generate-vapid-keys --json
+VAPID_PUBLIC_KEY=<your-generated-public-key>
+VAPID_PRIVATE_KEY=<your-generated-private-key>
+VAPID_SUBJECT=mailto:admin@alex-dyakin.com
 ```
 
 **Note on file sizes**: The MAX_FILE_SIZE uses BLOB storage which is **dynamic** - a 10MB file takes 10MB, a 1.5GB file takes 1.5GB. No wasted space!

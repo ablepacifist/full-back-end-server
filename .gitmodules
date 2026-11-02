@@ -1,7 +1,7 @@
 [submodule "Lexicon"]
 	path = Lexicon
 	url = https://github.com/ablepacifist/Lexicon.git
-	branch = dev
+	branch = main
 [submodule "lexiconServer"]
 	path = lexiconServer
 	url = https://github.com/ablepacifist/lexiconServer.git
@@ -9,4 +9,16 @@
 [submodule "alchemyServer"]
 	path = alchemyServer
 	url = https://github.com/ablepacifist/alchemyServer.git
+	branch = main
+[submodule "pokemon/pokemon"]
+	path = pokemon/pokemon
+	url = git@github.com:ablepacifist/pokemon.git
+	branch = main
+[submodule "Lexi"]
+	path = Lexi
+	url = git@github.com:ablepacifist/Lexi.git
+	branch = main
+[submodule "myRustDeck"]
+	path = myRustDeck
+	url = https://github.com/ablepacifist/myRustDeck.git
 	branch = main

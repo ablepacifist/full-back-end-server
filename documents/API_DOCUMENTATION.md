@@ -1,9 +1,9 @@
 # Lexicon Server API Documentation
 
-**Version:** 2.0  
+**Version:** 2.3  
 **Base URL (Frontend):** `https://alex-dyakin.com`  
 **Base URL (Direct API):** `https://api.alex-dyakin.com` (production) or `http://localhost:36568` (local)  
-**Last Updated:** May 25, 2026 (Windows deployment, audio streaming fixes)
+**Last Updated:** June 13, 2026 (Holdfast Management endpoints)
 
 ## Environment Info
 - **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel (port 3001)
@@ -30,7 +30,10 @@
 12. [Media Streaming](#media-streaming)
 13. [Chat Files (Rich Media Chat)](#chat-files-rich-media-chat)
 14. [Text Messages](#text-messages)
-15. [Data Models](#data-models)
+15. [Push Notifications (Web Push)](#push-notifications-web-push)
+16. [SSO Tokens (Lexicon -> Voice Bridge)](#sso-tokens-lexicon---voice-bridge)
+17. [Data Models](#data-models)
+18. [Holdfast Management (Alchemy API)](#holdfast-management-alchemy-api)
 
 ---
 
@@ -218,6 +221,63 @@ Invalidate current session.
   "message": "Logged out successfully"
 }
 ```
+
+---
+
+## SSO Tokens (Lexicon -> Voice Bridge)
+
+Base Path: `/api/auth/sso`
+
+**Use Case:** Single sign-on handoff from Lexicon frontend to `https://voice.alex-dyakin.com`.
+Tokens are short-lived (60 seconds) and single-use.
+
+### POST /api/auth/sso/generate-token
+Generate an SSO token for the currently authenticated session user.
+
+**Auth Required:** Yes (valid `JSESSIONID` session)
+
+**Request:** No body
+
+**Response (200):**
+```json
+{
+  "token": "base64url-token",
+  "expiresInSeconds": 60
+}
+```
+
+**Errors:**
+- `401 Unauthorized`: No authenticated session
+
+---
+
+### POST /api/auth/sso/validate-token
+Validate and consume an SSO token. This endpoint is intended for bridge service server-to-server validation.
+
+**Request:**
+```json
+{
+  "token": "base64url-token"
+}
+```
+
+**Response (200):**
+```json
+{
+  "valid": true,
+  "userId": 7,
+  "username": "alex",
+  "displayName": "Alex"
+}
+```
+
+**Errors:**
+- `400 Bad Request`: Missing token
+- `401 Unauthorized`: Invalid, expired, or already-used token
+
+**Notes:**
+- Token is deleted after validation attempt (single-use)
+- Expiration is 60 seconds from generation
 
 ---
 
@@ -1726,6 +1786,126 @@ Search messages by content.
 
 ---
 
+## Push Notifications (Web Push)
+
+Base Path: `/api/push`
+
+**Use Case:** Register browser push subscriptions and send encrypted push notifications to offline users.
+
+**Security/Architecture Notes:**
+- API layer (`PushNotificationController`) delegates to logic layer (`PushNotificationService`)
+- Logic layer handles payload creation, VAPID auth, ECDH, and AES-128-GCM encryption
+- Data layer persists subscriptions via `IPushSubscriptionDatabase`/`HSQLPushSubscriptionDatabase`
+- Payloads are encrypted per RFC 8291 before delivery
+
+### GET /api/push/vapid-key
+Get VAPID public key used by browser clients when calling `PushManager.subscribe()`.
+
+**Response (200):**
+```json
+{
+  "publicKey": "BLOnJPlh4qyMxl1N2Yw2jmYUkmASl8FZ9HBE3EqZXOn6BcexT4fsOhWXx5cp_hWr3bwwoGRuWR9owjI68UP43Ec"
+}
+```
+
+**Errors:**
+- `503 Service Unavailable`: Push is not configured (missing VAPID keys)
+
+---
+
+### POST /api/push/subscribe
+Register or update a device push subscription.
+
+**Request Body:**
+```json
+{
+  "userId": 7,
+  "endpoint": "https://fcm.googleapis.com/fcm/send/abcdef...",
+  "keys": {
+    "p256dh": "base64url-key",
+    "auth": "base64url-auth"
+  },
+  "userAgent": "Mozilla/5.0 ..."
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Push subscription registered"
+}
+```
+
+---
+
+### POST /api/push/unsubscribe
+Remove a device push subscription.
+
+**Request Body:**
+```json
+{
+  "endpoint": "https://fcm.googleapis.com/fcm/send/abcdef..."
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Push subscription removed"
+}
+```
+
+---
+
+### POST /api/push/send
+Send an encrypted push notification to one user.
+
+**Request Body:**
+```json
+{
+  "userId": 7,
+  "title": "New message",
+  "body": "You have a new DM",
+  "url": "https://voice.alex-dyakin.com/dm/7",
+  "data": { "channelId": 10 }
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "sent": 1
+}
+```
+
+---
+
+### POST /api/push/send-bulk
+Send an encrypted push notification to multiple users.
+
+**Request Body:**
+```json
+{
+  "userIds": [7, 8, 9],
+  "title": "Channel mention",
+  "body": "You were mentioned",
+  "url": "https://voice.alex-dyakin.com/channels/42"
+}
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "sent": 2
+}
+```
+
+---
+
 ## Data Models
 
 ### Player / User
@@ -1902,6 +2082,235 @@ Search messages by content.
 
 ---
 
+## Holdfast Management (Alchemy API)
+
+**Base URL:** `https://alchemy.alex-dyakin.com` (production) or `http://localhost:8080` (local)  
+**Auth:** Session cookie (`JSESSIONID`) — include `credentials: 'include'` in all fetch calls  
+**Path prefix:** `/api/holdfast`
+
+A D&D settlement management system. Holdfasts have buildings, resources, population, and gold — time advances day-by-day with raids, production events, and population growth.
+
+---
+
+### GET /api/holdfast/all
+Return all holdfasts.
+
+**Response `200`:**
+```json
+[
+  {
+    "id": 1,
+    "groupName": "zx",
+    "holdfastName": "Ironkeep",
+    "baseGoldPerDay": 40.0,
+    "population": 40,
+    "castleType": "wood_fort",
+    "gold": 608.7,
+    "silver": 0,
+    "happiness": 50.0,
+    "targetHappiness": 50.0,
+    "daysElapsed": 7,
+    "beer": 3,
+    "grain": 0,
+    "wine": 0,
+    "tools": 0,
+    "raidsSurvived": 0,
+    "buildings": { "tavern": 1, "blacksmith": 1 },
+    "wheatFieldPlantDays": [],
+    "vegetableGardenPlantDays": [],
+    "orchardPlantDays": [],
+    "vineyardPlantDays": [],
+    "populationGrowthHistory": []
+  }
+]
+```
+
+---
+
+### GET /api/holdfast/{groupName}
+Return full status for one holdfast, including a computed building menu.
+
+**Response `200`:**
+```json
+{
+  "holdfast": { "...same fields as above..." },
+  "dailyIncome": 44.1,
+  "dailyUpkeep": 1.4,
+  "netDailyGold": 42.7,
+  "protection": 47.8,
+  "raidChance": 4.42,
+  "buildingMenu": [
+    {
+      "type": "tavern",
+      "name": "Tavern",
+      "status": "maxed",
+      "currentCount": 1,
+      "maxCount": 1,
+      "cost": 120,
+      "dailySilver": 3.0,
+      "dailyUpkeep": 0.5,
+      "happiness": 5.0,
+      "description": "Produces beer every 7 days"
+    }
+  ]
+}
+```
+
+**Response `404`:** `{ "error": "Holdfast not found" }`
+
+---
+
+### POST /api/holdfast/create
+Create a new holdfast.
+
+**Request:**
+```json
+{ "groupName": "zx", "holdfastName": "Ironkeep" }
+```
+
+**Response `200`:** Full holdfast object (see GET /all)  
+**Response `400`:** `{ "error": "groupName is required" }` or `{ "error": "Holdfast already exists for group: zx" }`
+
+---
+
+### POST /api/holdfast/advance
+Advance time by N days. Returns a day-by-day event log.
+
+**Request:**
+```json
+{ "groupName": "zx", "days": 30 }
+```
+
+**Response `200`:**
+```json
+{
+  "events": [
+    "Advancing 30 day(s)...",
+    "DAY 7 - Taverns produced 3 beer (Total: 3)",
+    "DAY 14 - BANDIT RAID! Bandits stole 280g!",
+    "  Buildings destroyed: Tavern",
+    "  Population casualties: 3",
+    "Day 20: Net +40.0g | Total: 620.0g",
+    "Day 30: Net +40.0g | Total: 1020.0g"
+  ],
+  "holdfast": { "...updated holdfast..." }
+}
+```
+
+**Response `400`:** `{ "error": "Days must be between 1 and 365" }`
+
+---
+
+### POST /api/holdfast/build
+Build one unit of a building type. Deducts gold; tracks plant days for crop fields.
+
+**Request:**
+```json
+{ "groupName": "zx", "buildingType": "tavern" }
+```
+
+**Response `200`:** `{ "success": true, "message": "Built Tavern for 60g", "holdfast": { "..." } }`  
+**Response `400`:** `{ "success": false, "message": "Not enough gold. Need 60g, have 20.0g" }`  
+            or `{ "success": false, "message": "Market requires at least 60 population (current: 40)" }`  
+            or `{ "success": false, "message": "Tavern is already at max (1)" }`
+
+**Building types (30 total):**
+
+| Type | Min Pop | Base Cost | Daily Silver | Resource Cost | Notes |
+|------|---------|-----------|--------------|---------------|-------|
+| `alchemy_garden` | 0 | 80g | 20s | — | +1 happiness |
+| `mine` | 0 | 120g | 0 | — | +2 stone +1 iron per 7d; -5 happiness |
+| `logging_camp` | 0 | 70g | 0 | — | +3 wood per 7d |
+| `tavern` | 0 | 60g | 10s | — | +3 beer per 7d; +5 happiness |
+| `guard_tower` | 0 | 25g | 0 | 4 wood | +10 protection |
+| `wheat_field` | 0 | 50g | 0 | — | +20 food per 14d, auto-replants |
+| `vegetable_garden` | 30 | 45g | 0 | — | +10 food per 10d, auto-replants; +1 happiness |
+| `orchard` | 50 | 150g | 0 | — | +8 food +40g per 30d; +2 happiness |
+| `vineyard` | 60 | 180g | 0 | — | +2 wine per 7d; +4 happiness |
+| `blacksmith` | 35 | 140g | 15s | — | +2 tools per 14d; +5 protection; +1 happiness |
+| `carpenter` | 30 | 110g | 12s | — | -10% build costs per carpenter |
+| `chapel` | 40 | 250g | 0 | 5 stone | +15 happiness |
+| `market` | 60 | 320g | 20s | 5 wood, 5 stone | +10% all building gold; +8 happiness |
+| `festival_ground` | 70 | 220g | 0 | 4 wood, 3 stone | +80g per 30d; +10 happiness |
+| `library` | 75 | 380g | 0 | 4 wood, 3 stone | +8 happiness |
+| `hospital` | 90 | 480g | 0 | 4 wood, 3 iron | +3 pop growth; +12 happiness |
+| `lighthouse` | 80 | 420g | 25s | 5 stone | +6 happiness |
+| `stone_walls` | 80 | 1000g | 0 | 20 stone | +30 protection; -2 happiness; upgrades to stone_fort |
+| `castle_keep` | 150 | 1800g | 0 | 12 stone, 8 iron | +50 protection; -4 happiness; upgrades to stone_castle |
+| `church` | 100 | 650g | 0 | 8 stone, 2 iron | +30 happiness; +2 pop growth; requires chapel |
+| `grand_theater` | 110 | 550g | 30s | 6 wood, 4 stone | +12 happiness |
+| `university` | 130 | 800g | 0 | 5 stone, 3 iron | +15 happiness; requires library |
+| `mint` | 140 | 900g | 40s | 8 iron, 5 stone | -2 happiness |
+| `aqueduct` | 150 | 1200g | 0 | 10 stone, 5 iron | +18 happiness; +2 pop growth |
+| `canal_small` | 160 | 800g | 10s | — | +8 happiness; requires aqueduct |
+| `canal_major` | 200 | 2500g | 40s | — | +15% gold on all buildings; +25 happiness; requires canal_small |
+| `harbor` | 170 | 1400g | 100s | 8 wood, 8 stone | +15 happiness |
+| `palace` | 200 | 3000g | 0 | — | +35 happiness |
+| `colosseum` | 180 | 2200g | 50s | — | +20 happiness |
+| `museum` | 160 | 1600g | 0 | — | +12 happiness |
+
+> **Note:** Daily silver is reduced by 15% before conversion to gold (10s = 1g after reduction). Market (+10%) and Major Canal (+15%) bonuses apply after the reduction.
+
+---
+
+### Game Mechanics Summary
+
+**Daily Loop (per day advanced):**
+1. Gold income: `baseGoldPerDay (40) + population/10 + building silver×0.85/10`
+2. Gold upkeep: sum of building daily upkeep / 10
+3. Food consumption: `ceil(population × 0.2)` food/day
+   - No food → spend `population × 2g` per day on emergency rations
+   - No food AND no gold → happiness −3/day (famine)
+4. Happiness drifts 0.5/day toward target happiness
+5. Raid check: chance = `max(0.5%, 8% − protection × 0.075)`
+6. Every 7 days: population growth check; mine/logging camp production
+7. Field harvests trigger when `currentDay − plantDay ≥ harvestDays`
+
+**Target Happiness:**
+- Base: 75 + sum of building happiness bonuses
+- Crowding penalty: `1.04^max(0, population−40)` (exponential — each person above 40 compounds 4%)
+- Example: pop 80 → penalty ≈ 4.8; pop 100 → penalty ≈ 10.5; pop 120 → penalty ≈ 23
+
+**Population Growth (every 7 days):**
+- Requires happiness ≥ 65
+- Chance = `(happiness − 65) / 100 + 0.10`
+- Growth = 1–3 people; bonuses from hospital (+3), church (+2), aqueduct (+2)
+
+---
+
+### POST /api/holdfast/deposit
+Add gold to the holdfast treasury.
+
+**Request:**
+```json
+{ "groupName": "zx", "gold": 500.0 }
+```
+
+**Response `200`:** `{ "message": "Deposited 500.0g successfully", "holdfast": { "..." } }`
+
+---
+
+### POST /api/holdfast/withdraw
+Withdraw gold and/or resources from the holdfast.
+
+**Request:**
+```json
+{ "groupName": "zx", "gold": 100.0, "beer": 2, "wine": 0, "grain": 0, "tools": 1 }
+```
+
+**Response `200`:** `{ "message": "Resources withdrawn successfully", "success": true }`  
+**Response `400`:** `{ "message": "Not enough resources to withdraw", "success": false }`
+
+---
+
+### DELETE /api/holdfast/{groupName}
+Delete a holdfast and all its data.
+
+**Response `200`:** `{ "message": "Holdfast deleted", "success": true }`  
+**Response `404`:** `{ "error": "Holdfast not found" }`
+
+---
+
 ## Error Responses
 
 All endpoints follow consistent error response format:
@@ -2016,13 +2425,25 @@ allowedOriginPatterns.add("https://your-domain\.com");
 - Use `/api/stream/{mediaFileId}` for enhanced streaming with range support
 - Always check `Accept-Ranges` and `Content-Range` headers for seeking
 
-### 7. Database Communication
+### 7. Push Notifications
+- Use `/api/push/vapid-key` to bootstrap browser subscription
+- Register device subscription via `/api/push/subscribe`
+- Voice/bridge services can trigger push via `/api/push/send` or `/api/push/send-bulk`
+- Push payloads are encrypted before delivery
+
+### 8. SSO Handoff to Voice
+- Generate handoff token with `/api/auth/sso/generate-token` using active Lexicon session cookie
+- Redirect users to `https://voice.alex-dyakin.com?token=...`
+- Bridge validates token once via `/api/auth/sso/validate-token`
+- Treat tokens as one-time credentials and never store them long-term
+
+### 9. Database Communication
 - No direct database access between microservices
 - All communication via HTTP REST API
 - Use appropriate endpoints for CRUD operations
 - Implement retry logic for network failures
 
-### 8. Error Handling
+### 10. Error Handling
 ```javascript
 const response = await fetch(url, options);
 if (!response.ok) {
@@ -2032,7 +2453,7 @@ if (!response.ok) {
 }
 ```
 
-### 9. Performance Tips
+### 11. Performance Tips
 - Poll `/api/download-queue/status/{jobId}` at reasonable intervals (5-10 seconds)
 - Cache media file metadata to reduce API calls
 - Use SSE for real-time updates instead of polling
@@ -2073,6 +2494,48 @@ curl -X POST http://localhost:36568/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"username":"test","password":"test"}' \
   -c cookies.txt
+```
+
+**Get VAPID Public Key:**
+```bash
+curl https://api.alex-dyakin.com/api/push/vapid-key
+```
+
+**Register Push Subscription:**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/push/subscribe \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": 7,
+    "endpoint": "https://fcm.googleapis.com/fcm/send/example",
+    "keys": {"p256dh": "key", "auth": "auth"},
+    "userAgent": "Mozilla/5.0"
+  }'
+```
+
+**Send Push Notification:**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/push/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "userId": 7,
+    "title": "New DM",
+    "body": "You have a new message",
+    "url": "https://voice.alex-dyakin.com"
+  }'
+```
+
+**Generate SSO Token (requires authenticated Lexicon session):**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/auth/sso/generate-token \
+  -b cookies.txt
+```
+
+**Validate SSO Token (bridge server-to-server call):**
+```bash
+curl -X POST https://api.alex-dyakin.com/api/auth/sso/validate-token \
+  -H "Content-Type: application/json" \
+  -d '{"token":"base64url-token"}'
 ```
 
 **Get Current User:**

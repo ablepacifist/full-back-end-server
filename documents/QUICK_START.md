@@ -1,5 +1,7 @@
 # Production Quick Start Guide
 
+> **Cloudflare Tunnel is the primary access method today** — `https://alex-dyakin.com`, `api.alex-dyakin.com`, `alchemy.alex-dyakin.com`, `poke.alex-dyakin.com`. Start the `Cloudflared` Windows service and run `.\restart-all.ps1`; that's the whole setup, and it works from any location/ISP with no reconfiguration. Everything below is the legacy PlayIt.gg IP-based setup, kept only as a secondary fallback — it is **not** required.
+
 ## 🚀 Quick Setup (10 minutes)
 
 ### ⚠️ CRITICAL: Use IP Addresses!
