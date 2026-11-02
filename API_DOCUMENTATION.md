@@ -1,9 +1,9 @@
 # Lexicon Server API Documentation
 
-**Version:** 2.4  
+**Version:** 2.5  
 **Base URL (Frontend):** `https://alex-dyakin.com`  
 **Base URL (Direct API):** `https://api.alex-dyakin.com` (production) or `http://localhost:36568` (local)  
-**Last Updated:** September 19, 2026 (Full endpoint audit: app update/version, avatar proxy, events & polls, notifications, voice relay, health/info, live stream channels, and Alchemy Auth/Game/Player/Potion endpoints)
+**Last Updated:** November 2, 2026 (Security review: a login is now required on the API, the bridge service token, login throttling, the Lexi service API with its authentication and upload limits, and the corrected avatar proxy)
 
 ## Environment Info
 - **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel (port 3001)
@@ -11,7 +11,7 @@
 - **Alchemy API:** Port 8080 via https://alchemy.alex-dyakin.com (Cloudflare Tunnel)
 - **Database:** HSQLDB 2.7.4 on port 9002
 - **Host OS:** Windows 11 with WSL2 (ext4 USB HDD for media storage)
-- **Authentication:** HTTP session-based with JSESSIONID cookie
+- **Authentication:** HTTP session (`JSESSIONID`), remember-me cookie, mobile bearer token, and a shared service token for the voice bridge only (see [Authentication & Security](#authentication--security))
 - **CORS:** Configured for alex-dyakin.com, PlayIt origins, and localhost
 - **Media Storage:** `\\wsl.localhost\Ubuntu\mnt\wsl\PHYSICALDRIVE1p2\lexicon-storage`
 
@@ -34,15 +34,16 @@
 16. [Notifications (In-App / Mumble Bridge)](#notifications-in-app--mumble-bridge)
 17. [Events & Polls](#events--polls)
 18. [Voice Relay (Lexi)](#voice-relay-lexi)
-19. [Avatar Proxy (Mumble Bridge)](#avatar-proxy-mumble-bridge)
-20. [App Version & Update](#app-version--update)
-21. [Health & Info](#health--info)
-22. [Data Models](#data-models)
-23. [Holdfast Management (Alchemy API)](#holdfast-management-alchemy-api)
-24. [Alchemy Authentication](#alchemy-authentication)
-25. [Alchemy Player](#alchemy-player)
-26. [Alchemy Potion Brewing](#alchemy-potion-brewing)
-27. [Alchemy Game Lifecycle](#alchemy-game-lifecycle)
+19. [Lexi Service API (/health, /turn, /stt)](#lexi-service-api-health-turn-stt)
+20. [Avatar Proxy (Mumble Bridge)](#avatar-proxy-mumble-bridge)
+21. [App Version & Update](#app-version--update)
+22. [Health & Info](#health--info)
+23. [Data Models](#data-models)
+24. [Holdfast Management (Alchemy API)](#holdfast-management-alchemy-api)
+25. [Alchemy Authentication](#alchemy-authentication)
+26. [Alchemy Player](#alchemy-player)
+27. [Alchemy Potion Brewing](#alchemy-potion-brewing)
+28. [Alchemy Game Lifecycle](#alchemy-game-lifecycle)
 
 > **Note on section 11:** an earlier revision of this doc referenced a separate "Live Stream (Lightweight)" endpoint set. No such implementation exists in current source — `LiveStreamController` is the only live-stream controller. That TOC entry has been removed.
 
@@ -68,16 +69,41 @@ The Lexicon Server uses **HTTP session-based authentication**. Sessions are stor
 4. Client includes cookie in subsequent requests via `credentials: 'include'`
 5. Server validates session on protected endpoints
 
-#### Protected Endpoints:
-- Use `/api/auth/me` to check if session is valid
-- **Important:** `LexiconSecurityConfig` currently `permitAll()`s nearly every `/api/**` path at the Spring Security filter level — including `/api/players/**`, `/api/media/**`, `/api/playlists/**`, `/api/playback/**`, `/api/livestream/**`, `/api/stream/**`, `/api/download-queue/**`, `/api/messages/**`, `/api/chat/**`, `/api/push/**`, `/api/notifications/**`, `/api/events/**`, `/api/avatar/**`, and the auth entry points themselves. Only `/api/voice/**` and `/api/app/**` (version/update metadata, gated by a property that defaults to requiring auth) fall through to the catch-all `authenticated()` rule.
-- In practice this means most endpoints do **not** return 401 for missing sessions at the framework level — any "auth" on them is whatever the controller/service manually checks (a session attribute, or nothing at all). Several endpoints trust a plain `userId` query/body parameter with **no verification that it matches the caller's session** (e.g. Playback Position, Messages, Push subscribe/send). Treat `userId` on those endpoints as client-asserted, not server-verified.
-- Endpoints that do manually check for an active session: `GET /api/auth/me`, `POST /api/auth/sso/generate-token`, `GET /api/voice/status`, `POST /api/voice/turn`. These return `401 Unauthorized` on a missing/invalid session even though Spring Security itself would let the request through.
+#### Which routes need a login
+Since 2026-11-02 **every route under `/api/**` needs a signed-in player**, and an anonymous caller gets `401 Unauthorized`. The only exceptions:
 
-#### Authorization:
-- **User-Based Permissions:** Some resources (playlists, media, messages) verify `userId` matches the resource's stored owner before update/delete and throw a `403`-mapped exception if not — but only for the specific mutation endpoints that implement that check (see each section below). Creation and most read endpoints do not verify ownership at all.
-- **Public Access:** Public media/playlists are readable by anyone, authenticated or not (per the `permitAll()` posture above).
-- **Known gap:** `GET /api/players`, `GET /api/players/{id}`, and `GET /api/players/username/{username}` (Lexicon) and `GET /api/player/{id}`, `GET /api/player/username/{username}`, `GET /api/player/all` (Alchemy) currently serialize the full `Player` object, which includes the password field — there is no `@JsonIgnore` on it. Do not expose these responses directly to untrusted clients without stripping `password` first.
+| Open without a login | Why |
+|---|---|
+| `POST /api/auth/register`, `/login`, `/logout`, `GET /api/auth/me`, and `/api/auth/sso/**` | sign-in itself; `me` answers 401 when there is no session |
+| `GET /api/health`, `GET /api/info` | monitoring |
+| `GET /api/app/version`, `GET /api/app/download/**` | only when `app.update.public-metadata` / `app.update.public-download` are `true` |
+| `GET /api/media/stream/**`, `/api/stream/**`, `/api/avatar/image/**`, `/api/chat/files/**`, `/api/livestream/updates`, `/api/notifications/stream`, `/api/playlists/import-progress/**` | loaded by `<audio>`, `<video>`, `<img>` tags and `EventSource`, which cannot send the Android app's `Authorization` header |
+| `GET /api/events/{id}`, `GET /api/events/{id}/polls/{pollId}`, `PUT .../votes`, `POST .../options` | event polls are shared by link and voted on by guests; creating events and polls still needs a login |
+
+The GTW voice bridge authenticates with the `X-Service-Token` header (see below) and may use **only**:
+- bridge-only: `/api/messages/**`, `POST /api/chat/upload`, `POST /api/push/send`, `POST /api/push/send-bulk`, `POST /api/notifications`
+- bridge **and** signed-in players: `/api/chat/**`, `/api/avatar/**`, `/api/push/**`, `/api/notifications/**`, `/api/livestream/**`, and the reads `GET /api/players`, `GET /api/players/username/{name}`, `/api/media/**`, `/api/playlists/**`
+
+A signed-in player calling a bridge-only route gets `403`. (`LEXICON_LEGACY_OPEN_ROUTES=true` is a temporary switch that reopens the bridge's old credential-less routes; it is `false` in production.)
+
+#### Ways to be signed in
+- **Session cookie** `JSESSIONID`, from `POST /api/auth/login`.
+- **Remember-me cookie**, set when `rememberMe: true` is sent. If the session has been lost (for example after a restart) the next request restores it. The token is single-use and rotates on every use; a second request carrying the same token within 20 seconds is still honoured, so parallel requests do not race.
+- **Mobile bearer token** (`Authorization: Bearer <token>`), issued in the login response when `platform: "mobile"` is sent. It lasts 90 days and is renewed in the `X-Mobile-Token` response header when under half its life is left.
+- **Service token** (`X-Service-Token: <secret>`, the `LEXICON_SERVICE_TOKEN` shared with the voice bridge). A wrong token is ignored, so the request is treated as anonymous.
+
+#### Protections on top of the login
+- **Login throttle:** the first 5 wrong passwords for an address+username are free; each further failure makes the next attempt wait 5 s, doubling up to 5 minutes. A throttled attempt returns `429 Too Many Requests` with a `Retry-After` header, even if the password is right. There is also a looser cap per address (25). A successful login clears the count.
+- **Real client address:** `CF-Connecting-IP` / `X-Forwarded-For` are believed only when the connection itself comes from loopback (the Cloudflare tunnel). A direct caller cannot use them to dodge the throttle.
+- **Cookies and headers:** the session and remember-me cookies are `Secure` only when the request really arrived over HTTPS (the tunnel's `X-Forwarded-Proto`), so a plain-HTTP LAN login keeps working. HTTPS responses carry `Strict-Transport-Security`; every response carries `Referrer-Policy`. An unexpected failure during login returns a generic message rather than exception text.
+- **Passwords:** never returned in any JSON (`Player.password` is `@JsonIgnore`), stored as BCrypt; an older plaintext value is upgraded to BCrypt the next time that player logs in.
+- **Downloads and imports** (`yt-dlp`, `upload-from-url`, playlist import) accept only public `http(s)` URLs: no credentials in the URL and no address that resolves to a private, loopback or link-local range.
+
+#### Authorization
+- **A player acts as themself.** A signed-in player who names a different `userId` in a query parameter, path or JSON body gets `403 Forbidden` (the bridge, acting for players, is exempt). Many endpoints still take `userId` for convenience; it must equal the caller's own id.
+- **Ownership:** playlists, media, messages and playback positions can be changed or deleted only by their owner.
+- **Accounts:** `DELETE /api/players/{id}` works only on your own account.
+- **Public media/playlists** are readable by any signed-in player.
 
 ---
 
@@ -2437,7 +2463,9 @@ Base Path: `/api/voice`
 
 **Use Case:** Relays a browser-recorded voice clip from the Lexicon frontend to **Lexi**, the local voice-assistant process bound to `127.0.0.1:8765` on the same host (aragon), and returns Lexi's reply. This exists because aragon's microphone isn't always physically accessible, so recording happens in the browser instead. This is distinct from `voice.alex-dyakin.com` (the Mumble Bridge / SSO target) — this endpoint talks to Lexi over localhost only, and is not reachable if Lexi isn't running on the same machine as this Lexicon instance.
 
-**Auth Required:** Yes, for both endpoints — this is one of the few controllers Spring Security actually gates (`/api/voice/**` falls through to the catch-all `authenticated()` rule), and the controller additionally self-checks the session.
+**Auth Required:** Yes, for both endpoints (a signed-in player, like every `/api/**` route); the controller additionally self-checks the session.
+
+**Lexicon to Lexi:** the relay calls Lexi with `Authorization: Bearer <lexi.tool.token>`. What Lexi itself enforces (exact `Bearer` scheme, constant-time token check, 8 MiB limit applied before the body is read) is described in [Lexi Service API](#lexi-service-api-health-turn-stt).
 
 ### GET /api/voice/status
 Report whether the voice relay is configured, so the frontend can explain itself before the user records anything.
@@ -2469,11 +2497,109 @@ Relay one recorded audio clip to Lexi and return its reply.
 
 ---
 
+## Lexi Service API (/health, /turn, /stt)
+
+**This is not part of the Lexicon server.** Lexi is a separate Python (FastAPI) service from the `Lexi` repository. Lexicon's [Voice Relay](#voice-relay-lexi) calls it, and the Raspberry Pi's Lexi calls aragorn's copy for speech-to-text, so its contract is documented here. A server process runs in one of two modes:
+
+| Mode | Start | Routes | Where it runs |
+|---|---|---|---|
+| Full | `python -m lexi.server --host <address> --port <port>` | `GET /health`, `POST /turn` | the machine running the assistant |
+| STT only | `python -m lexi.server --stt --host 0.0.0.0 --port 8765` | `GET /health`, `POST /stt` | aragorn (started by `./restart-all`); the Pi reaches it over the LAN |
+
+A route that belongs to the other mode answers `404` (for example `/turn` on the STT-only service). CORS allows no browser origin, so these routes are for servers and scripts, not for web pages.
+
+### Authentication (every route except `/health`)
+Send `Authorization: Bearer <token>`, where the token is the value of `LEXI_TOOL_TOKEN` (or the contents of the `.tool_token` file) on the Lexi machine.
+
+Rules:
+- The scheme must be exactly `Bearer` (capital B), then one space, then the token. Spaces around the token are ignored.
+- A **bare token** (no scheme), another scheme (`Basic ...`), a lower-case `bearer`, an empty value, a missing header, a wrong token, a token with something added, and a prefix of the right token are **all refused** with `401`.
+- The token is compared in **constant time**, so response timing does not reveal how much of a guess was right.
+- If the server has no token configured it **fails closed** with `503`; an empty configured token is never read as "no authentication needed".
+- The token is checked **before the request body is read**, so an unauthenticated caller cannot make the server buffer an upload.
+
+| Status | Body | When |
+|---|---|---|
+| `401` | `{"detail": "bad or missing tool token"}` | any of the refused cases above |
+| `503` | `{"detail": "Lexi tool token is not configured"}` | the server has no token set |
+
+All errors from Lexi use FastAPI's shape, `{"detail": "<message>"}`.
+
+### Upload size limit
+The audio body of `/turn` and `/stt` is limited to **8 MiB (8,388,608 bytes)**. The limit is applied while the body is being received, not afterwards:
+- a `Content-Length` over the limit is refused with `413` **before any of the body is read**;
+- a body that is larger than it declared, or is sent chunked with no length, is **cut off at the limit** with `413` rather than being buffered whole first;
+- a `Content-Length` that is not a number is `400` with `{"detail": "bad Content-Length"}`;
+- an empty body is `400` with `{"detail": "empty audio upload"}`.
+
+`413` body: `{"detail": "clip larger than 8388608 bytes"}`.
+
+---
+
+### GET /health
+No authentication.
+
+**Response (200):** `{ "ok": true }`
+
+---
+
+### POST /turn  *(full mode)*
+One complete voice turn: speech in, transcript, assistant reply and spoken reply out.
+
+**Request:** the raw recorded clip as the body (not multipart); any `Content-Type`, any container the decoder understands (WebM/Opus, MP4/AAC, WAV...). Headers: `Authorization` as above.
+
+**Response (200), speech found:**
+```json
+{
+  "transcript": "turn on the light",
+  "reply": "Done.",
+  "spoken": "Done.",
+  "audio_wav_base64": "UklGR...",
+  "timings": { "stt": 0.41, "brain": 1.2, "tts": 0.35, "total": 1.96 }
+}
+```
+`spoken` is `reply` with markdown stripped for speech; `audio_wav_base64` is a mono 16-bit WAV of it (empty string if there was nothing to speak). `timings` are seconds.
+
+**Response (200), silence:** `{ "transcript": "", "reply": "", "note": "no speech detected", "timings": { "stt": 0.2 } }` (not an error, and the assistant is not called).
+
+**Errors:** `401`, `503` (token), `413`, `400` (empty or bad length) as above, plus:
+- `400`: `{"detail": "could not decode audio: ..."}` (the clip could not be decoded)
+- `502`: `{"detail": "brain rejected our token: ..."}` (the assistant backend refused Lexi's credential)
+- `503`: `{"detail": "brain unreachable: ..."}` (the assistant backend is down)
+
+---
+
+### POST /stt  *(STT-only mode)*
+Transcribe raw PCM audio.
+
+**Query:** `sample_rate` (integer, default `16000`).
+
+**Request:** the body is **raw signed 16-bit little-endian mono PCM**, not an encoded file or multipart. Headers: `Authorization` as above, and `Content-Type: application/octet-stream`.
+
+**Response (200):**
+```json
+{ "transcript": "hello world", "timings": { "stt": 0.38 } }
+```
+
+**Errors:** `401`, `503` (token), `413`, `400` (empty or bad length) as above, plus `500`: `{"detail": "could not transcribe: ..."}`.
+
+**Example:**
+```bash
+curl -X POST "http://192.168.1.4:8765/stt?sample_rate=16000" \
+     -H "Authorization: Bearer $LEXI_TOOL_TOKEN" \
+     -H "Content-Type: application/octet-stream" \
+     --data-binary @clip.pcm
+```
+
+**Callers:** Lexicon's `VoiceRelayService` (to `/turn`) and Lexi's own remote-STT client (to `/stt` on aragorn); both send `Authorization: Bearer <token>`, so the stricter scheme check does not affect them.
+
+---
+
 ## Avatar Proxy (Mumble Bridge)
 
 Base Path: `/api/avatar`
 
-**Use Case:** Proxies avatar get/upload/remove/image requests from the Lexicon frontend through to the Mumble Bridge (`https://voice.alex-dyakin.com`), so browsers with strict cross-origin protections (e.g. Brave) can still load bridge-hosted avatar images. No auth required on any endpoint (`permitAll`).
+**Use Case:** Proxies avatar get/upload/remove/image requests from the Lexicon frontend through to the Mumble Bridge (`https://voice.alex-dyakin.com`), so browsers with strict cross-origin protections (e.g. Brave) can still load bridge-hosted avatar images. A signed-in player is required (like every `/api/**` route; `GET /api/avatar/image/**` stays open for `<img>` tags). Upload and remove work only for **your own** username: naming someone else returns `403` `{ "success": false, "message": "You can only change your own avatar" }` and nothing is sent to the bridge. Because Lexicon has already checked who the caller is, it forwards upload and remove to the bridge with the shared `X-Service-Token` header; the bridge accepts that token on those two routes only.
 
 ### GET /api/avatar/{username}
 Fetch a user's avatar metadata (proxies to bridge `GET /api/avatar/{username}`).
@@ -2496,7 +2622,7 @@ Upload an avatar image (proxied as multipart to bridge `POST /api/avatar/upload`
 
 **Response (200):** Bridge's JSON response, passed through.
 
-**Errors:** Same forwarding pattern as above, with `"Failed to upload avatar: ..."` on unreachable bridge.
+**Errors:** `403` if `username` is not the signed-in player. Otherwise the same forwarding pattern as above, with `"Failed to upload avatar: ..."` on unreachable bridge.
 
 ---
 
@@ -2510,7 +2636,7 @@ Remove a user's avatar (proxied as JSON to bridge `POST /api/avatar/remove`).
 
 **Response (200):** Bridge's JSON response, passed through.
 
-**Errors:** Same forwarding pattern, with `"Failed to remove avatar: ..."` on unreachable bridge.
+**Errors:** `403` if `username` is not the signed-in player. Otherwise the same forwarding pattern, with `"Failed to remove avatar: ..."` on unreachable bridge.
 
 ---
 
