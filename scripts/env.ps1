@@ -21,7 +21,7 @@ function Get-RegistryConfig {
         LAN_HOST                      = "192.168.1.4"
         ALISON_LAN_IP                 = "192.168.1.2"
         PI_LAN_IP                     = "192.168.1.8"
-        BILBO_LAN_IP                  = "192.168.1.11"
+        BILBO_LAN_IP                  = "192.168.1.18"
         FRONTEND_PORT                 = "3001"
         LEXICON_PORT                  = "36568"
         ALCHEMY_PORT                  = "8080"
