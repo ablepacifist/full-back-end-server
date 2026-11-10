@@ -22,3 +22,7 @@
 	path = myRustDeck
 	url = https://github.com/ablepacifist/myRustDeck.git
 	branch = main
+[submodule "myMumble"]
+	path = myMumble
+	url = https://github.com/ablepacifist/myMumble.git
+	branch = dev
