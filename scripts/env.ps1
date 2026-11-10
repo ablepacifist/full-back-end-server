@@ -37,6 +37,11 @@ function Get-RegistryConfig {
         PUBLIC_POKEMON_URL            = "https://poke.alex-dyakin.com"
         PUBLIC_BRIDGE_URL             = "https://voice.alex-dyakin.com"
         PUBLIC_BRAIN_URL              = "https://llm.alex-dyakin.com"
+        BRIDGE_ENABLED                = "false"
+        BRIDGE_PORT                   = "3080"
+        BRIDGE_HOST                   = "127.0.0.1"
+        MUMBLE_PORT                   = "64738"
+        MYSQL_PORT                    = "3306"
     }
 
     $envFile = Join-Path $BaseDir ".env"
@@ -75,6 +80,10 @@ function Test-CloudflaredIngress {
         ("http://127.0.0.1:" + $Cfg.LEXICON_PORT)  = "lexicon"
         ("http://127.0.0.1:" + $Cfg.ALCHEMY_PORT)  = "alchemy"
         ("http://127.0.0.1:" + $Cfg.POKEMON_PORT)  = "pokemon"
+    }
+    # The voice bridge's tunnel entry only matters once the bridge runs here.
+    if ($Cfg.BRIDGE_ENABLED -eq "true") {
+        $expected[("http://127.0.0.1:" + $Cfg.BRIDGE_PORT)] = "voice bridge"
     }
     $ingressServices = Get-Content $cfConfig | Where-Object { $_ -match '^\s*service:\s*(\S+)' } | ForEach-Object {
         if ($_ -match '^\s*service:\s*(\S+)') { $Matches[1] }

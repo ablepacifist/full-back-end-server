@@ -20,6 +20,16 @@ function Test-Port($port) {
     return [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
 }
 
+# For ports WSL forwards to Windows (MySQL and the Mumble server): a connection test, since they may not
+# show up in Get-NetTCPConnection.
+function Test-TcpPort([int]$port) {
+    $c = New-Object System.Net.Sockets.TcpClient
+    try {
+        $ar = $c.BeginConnect("127.0.0.1", $port, $null, $null)
+        return ($ar.AsyncWaitHandle.WaitOne(500) -and $c.Connected)
+    } catch { return $false } finally { $c.Close() }
+}
+
 # Auto-detects the ext4 media drive by GPT partition type GUID instead of a
 # fixed PHYSICALDRIVE/partition number, so this survives Windows re-enumerating
 # disks after the machine is physically moved/reseated (same approach as
@@ -142,6 +152,30 @@ while ($true) {
             Write-Log "Lexi restarted"
         } else {
             Write-Log "WARNING: Lexi still not listening after restart attempt (see logs\lexi.log)"
+        }
+    }
+
+    # Check the voice bridge (only once BRIDGE_ENABLED=true). Restarted on its own for the same reason as Lexi:
+    # a dead voice bridge must not take the website and media server down with a full restart. It is only started
+    # while its MySQL and Mumble server (in WSL) answer, otherwise it would crash-loop.
+    if ($cfg.BRIDGE_ENABLED -eq "true") {
+        $bridgeDir = Join-Path $BASE_DIR "myMumble\mumble-bridge"
+        if ((Test-Path (Join-Path $bridgeDir "src\index.js")) -and -not (Test-Port ([int]$cfg.BRIDGE_PORT))) {
+            if ((Test-TcpPort ([int]$cfg.MYSQL_PORT)) -and (Test-TcpPort ([int]$cfg.MUMBLE_PORT))) {
+                Write-Log "ALERT: voice bridge not listening on port $($cfg.BRIDGE_PORT) - restarting it"
+                $bridgeLog = Join-Path $logsDir "bridge.log"
+                Start-Process -FilePath "cmd.exe" `
+                    -ArgumentList "/c `"cd /d $bridgeDir && node src\index.js >> `"$bridgeLog`" 2>&1`"" `
+                    -WindowStyle Hidden -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 10
+                if (Test-Port ([int]$cfg.BRIDGE_PORT)) {
+                    Write-Log "Voice bridge restarted"
+                } else {
+                    Write-Log "WARNING: voice bridge still not listening after restart attempt (see logsridge.log)"
+                }
+            } else {
+                Write-Log "WARNING: voice bridge is down and MySQL or the Mumble server in WSL is not answering - not starting it"
+            }
         }
     }
 

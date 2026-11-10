@@ -58,6 +58,8 @@ $ports = @(
     [int]$cfg.FRONTEND_PORT, [int]$cfg.ALCHEMY_PORT, [int]$cfg.POKEMON_PORT,
     [int]$cfg.LEXICON_PORT, [int]$cfg.DB_PORT, [int]$cfg.LEXI_PORT, $rustdeckWebPort
 )
+# The voice bridge runs here only once BRIDGE_ENABLED=true (otherwise nothing of ours owns that port)
+if ($cfg.BRIDGE_ENABLED -eq "true") { $ports += [int]$cfg.BRIDGE_PORT }
 foreach ($port in $ports) {
     $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
     if ($conn) {
@@ -73,6 +75,21 @@ Start-Sleep -Seconds 3
 # Create logs directory
 $logsDir = Join-Path $BASE_DIR "logs"
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+
+# True when something accepts TCP connections on this machine's port (works for ports WSL forwards to Windows)
+function Test-TcpPort([int]$port) {
+    $c = New-Object System.Net.Sockets.TcpClient
+    try {
+        $ar = $c.BeginConnect("127.0.0.1", $port, $null, $null)
+        return ($ar.AsyncWaitHandle.WaitOne(500) -and $c.Connected)
+    } catch { return $false } finally { $c.Close() }
+}
+
+# ----- Voice chat services live inside WSL: stop them cleanly before WSL is shut down -----
+if ($cfg.BRIDGE_ENABLED -eq "true") {
+    Write-Host "`nStopping the Mumble server and MySQL in WSL..." -ForegroundColor Cyan
+    wsl -d Ubuntu -u root -e systemctl stop mumble-server mysql 2>$null
+}
 
 # ----- Start WSL and keep it alive (Java needs it for UNC path resolution) -----
 Write-Host "`nEnsuring WSL Ubuntu is running..." -ForegroundColor Cyan
@@ -231,6 +248,41 @@ if (Test-Path $lexiPython) {
 } else {
     Write-Host "  Lexi: no virtualenv at Lexi\.venv, skipping" -ForegroundColor Yellow
     Write-Host "    Create it with: cd Lexi; python -m venv .venv; .venv\Scripts\pip install -e `".[engines]`"" -ForegroundColor DarkGray
+}
+
+# ----- Start Voice bridge (myMumble) -----
+# Serves voice.alex-dyakin.com. Talks to the Mumble server and MySQL running in WSL (systemd starts both when
+# WSL boots) and to LexiconServer, so it starts after them. Off until BRIDGE_ENABLED=true in .env.
+# Settings come from the same root .env (MASTER_ENV_FILE); see myMumble/mumble-bridge/docs/SECURITY_HARDENING.md.
+if ($cfg.BRIDGE_ENABLED -eq "true") {
+    Write-Host "`nStarting Voice bridge..." -ForegroundColor Cyan
+    $bridgeDir = Join-Path $BASE_DIR "myMumble\mumble-bridge"
+    $bridgeLog = Join-Path $logsDir "bridge.log"
+    if (-not (Test-Path (Join-Path $bridgeDir "src\index.js"))) {
+        Write-Host "  myMumble is not checked out (run: git submodule update --init myMumble), skipping" -ForegroundColor Yellow
+    } elseif (-not (Test-Path (Join-Path $bridgeDir "node_modules"))) {
+        Write-Host "  no node_modules (run: npm ci in myMumble\mumble-bridge), skipping" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Waiting for MySQL ($($cfg.MYSQL_PORT)) and the Mumble server ($($cfg.MUMBLE_PORT)) in WSL..." -ForegroundColor Gray
+        $voiceDepsUp = $false
+        for ($i = 0; $i -lt 60; $i++) {
+            if ((Test-TcpPort ([int]$cfg.MYSQL_PORT)) -and (Test-TcpPort ([int]$cfg.MUMBLE_PORT))) { $voiceDepsUp = $true; break }
+            Start-Sleep 2
+        }
+        if (-not $voiceDepsUp) {
+            Write-Host "  WARNING: MySQL or the Mumble server is not answering in WSL, so the bridge was not started" -ForegroundColor Red
+        } else {
+            Start-Process -FilePath "cmd.exe" `
+                -ArgumentList "/c `"cd /d $bridgeDir && node src\index.js > `"$bridgeLog`" 2>&1`"" `
+                -WindowStyle Hidden
+            for ($i = 0; $i -lt 30; $i++) { Start-Sleep 1; if (Get-NetTCPConnection -LocalPort ([int]$cfg.BRIDGE_PORT) -State Listen -ErrorAction SilentlyContinue) { break } }
+            if (Get-NetTCPConnection -LocalPort ([int]$cfg.BRIDGE_PORT) -State Listen -ErrorAction SilentlyContinue) {
+                Write-Host "  Voice bridge started on port $($cfg.BRIDGE_PORT) ($($cfg.BRIDGE_HOST))" -ForegroundColor Green
+            } else {
+                Write-Host "  WARNING: Voice bridge did not start (check logsridge.log)" -ForegroundColor Yellow
+            }
+        }
+    }
 }
 
 # ----- Start PokemonServer -----
@@ -406,18 +458,27 @@ Write-Host "  LexiconServer:  http://localhost:$($cfg.LEXICON_PORT)"
 Write-Host "  PokemonServer:  http://localhost:$($cfg.POKEMON_PORT)"
 Write-Host "  Database:       localhost:$($cfg.DB_PORT)"
 Write-Host "  Lexi (STT):     http://localhost:$($cfg.LEXI_PORT)  (bound to $($cfg.LEXI_HOST), token-guarded /stt for the Pi / alison)"
+if ($cfg.BRIDGE_ENABLED -eq "true") {
+    Write-Host "  Voice bridge:   http://localhost:$($cfg.BRIDGE_PORT)"
+}
 
 Write-Host "`nExternal URLs (Cloudflare Tunnel - primary, works from any location):" -ForegroundColor Cyan
 Write-Host "  Frontend:       $($cfg.PUBLIC_FRONTEND_URL)"
 Write-Host "  LexiconServer:  $($cfg.PUBLIC_LEXICON_URL)"
 Write-Host "  AlchemyServer:  $($cfg.PUBLIC_ALCHEMY_URL)"
 Write-Host "  PokemonServer:  $($cfg.PUBLIC_POKEMON_URL)"
+if ($cfg.BRIDGE_ENABLED -eq "true") {
+    Write-Host "  Voice chat:     $($cfg.PUBLIC_BRIDGE_URL)"
+}
 
 Write-Host "`nLogs:" -ForegroundColor Cyan
 Write-Host "  Get-Content -Wait logs\database.log"
 Write-Host "  Get-Content -Wait logs\alchemy.log"
 Write-Host "  Get-Content -Wait logs\lexicon.log"
 Write-Host "  Get-Content -Wait logs\lexi.log"
+if ($cfg.BRIDGE_ENABLED -eq "true") {
+    Write-Host "  Get-Content -Wait logsridge.log"
+}
 Write-Host "  Get-Content -Wait logs\pokemon.log"
 Write-Host "  Get-Content -Wait logs\frontend.log"
 Write-Host ""
