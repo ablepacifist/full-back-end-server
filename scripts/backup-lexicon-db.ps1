@@ -71,7 +71,8 @@ try {
     Move-Item -Path $snap.FullName -Destination $archive
 
     # 2. local check: the archive lists and holds the data file
-    $listing = & tar -tzf $archive
+    # Full path on purpose: a GNU tar earlier on PATH (Git for Windows) reads "C:" as a remote host.
+    $listing = & (Join-Path $env:SystemRoot "System32\tar.exe") -tzf $archive
     if ($LASTEXITCODE -ne 0 -or ($listing -notcontains "alchemydb.script")) { throw "archive failed its check (no alchemydb.script inside)" }
     $sha  = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLower()
     $size = [math]::Round((Get-Item $archive).Length / 1KB)
