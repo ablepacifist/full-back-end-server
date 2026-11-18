@@ -1,9 +1,9 @@
 # Lexicon Server API Documentation
 
-**Version:** 2.5  
+**Version:** 2.6  
 **Base URL (Frontend):** `https://alex-dyakin.com`  
 **Base URL (Direct API):** `https://api.alex-dyakin.com` (production) or `http://localhost:36568` (local)  
-**Last Updated:** November 2, 2026 (Security review: a login is now required on the API, the bridge service token, login throttling, the Lexi service API with its authentication and upload limits, and the corrected avatar proxy)
+**Last Updated:** November 17, 2026 (Torrent downloads into Lexicon through qBittorrent on the Proton VPN split tunnel)
 
 ## Environment Info
 - **Frontend:** Running on https://alex-dyakin.com via Cloudflare Tunnel (port 3001)
@@ -24,28 +24,29 @@
 6. [Media Management](#media-management)
 7. [Chunked Upload (Large Files)](#chunked-upload-large-files)
 8. [Async Download Queue](#async-download-queue)
-9. [Playlist Management](#playlist-management)
-10. [Playback Position Tracking](#playback-position-tracking)
-11. [Live Stream](#live-stream)
-12. [Media Streaming](#media-streaming)
-13. [Chat Files (Rich Media Chat)](#chat-files-rich-media-chat)
-14. [Text Messages](#text-messages)
-15. [Push Notifications (Web Push)](#push-notifications-web-push)
-16. [Notifications (In-App / Mumble Bridge)](#notifications-in-app--mumble-bridge)
-17. [Events & Polls](#events--polls)
-18. [Voice Relay (Lexi)](#voice-relay-lexi)
-19. [Lexi Service API (/health, /turn, /stt)](#lexi-service-api-health-turn-stt)
-20. [Avatar Proxy (Mumble Bridge)](#avatar-proxy-mumble-bridge)
-21. [App Version & Update](#app-version--update)
-22. [Health & Info](#health--info)
-23. [Data Models](#data-models)
-24. [Holdfast Management (Alchemy API)](#holdfast-management-alchemy-api)
-25. [Alchemy Authentication](#alchemy-authentication)
-26. [Alchemy Player](#alchemy-player)
-27. [Alchemy Potion Brewing](#alchemy-potion-brewing)
-28. [Alchemy Game Lifecycle](#alchemy-game-lifecycle)
+9. [Torrent Downloads (qBittorrent)](#torrent-downloads-qbittorrent)
+10. [Playlist Management](#playlist-management)
+11. [Playback Position Tracking](#playback-position-tracking)
+12. [Live Stream](#live-stream)
+13. [Media Streaming](#media-streaming)
+14. [Chat Files (Rich Media Chat)](#chat-files-rich-media-chat)
+15. [Text Messages](#text-messages)
+16. [Push Notifications (Web Push)](#push-notifications-web-push)
+17. [Notifications (In-App / Mumble Bridge)](#notifications-in-app--mumble-bridge)
+18. [Events & Polls](#events--polls)
+19. [Voice Relay (Lexi)](#voice-relay-lexi)
+20. [Lexi Service API (/health, /turn, /stt)](#lexi-service-api-health-turn-stt)
+21. [Avatar Proxy (Mumble Bridge)](#avatar-proxy-mumble-bridge)
+22. [App Version & Update](#app-version--update)
+23. [Health & Info](#health--info)
+24. [Data Models](#data-models)
+25. [Holdfast Management (Alchemy API)](#holdfast-management-alchemy-api)
+26. [Alchemy Authentication](#alchemy-authentication)
+27. [Alchemy Player](#alchemy-player)
+28. [Alchemy Potion Brewing](#alchemy-potion-brewing)
+29. [Alchemy Game Lifecycle](#alchemy-game-lifecycle)
 
-> **Note on section 11:** an earlier revision of this doc referenced a separate "Live Stream (Lightweight)" endpoint set. No such implementation exists in current source — `LiveStreamController` is the only live-stream controller. That TOC entry has been removed.
+> **Note on section 12:** an earlier revision of this doc referenced a separate "Live Stream (Lightweight)" endpoint set. No such implementation exists in current source — `LiveStreamController` is the only live-stream controller. That TOC entry has been removed.
 
 ---
 
@@ -1104,6 +1105,192 @@ Cancel a download job.
 **Notes:**
 - Can only cancel jobs that haven't started or are still queued
 - Jobs in progress cannot be cancelled
+
+---
+
+## Torrent Downloads (qBittorrent)
+
+Base Path: `/api/torrents`
+
+**Use Case:** A signed-in user submits a `.torrent` file or a magnet / `.torrent` URL; aragorn downloads it through its Proton VPN split tunnel using qBittorrent, and imports **only the `.mp3` and `.mp4` files** into Lexicon as ordinary media.
+
+**How this differs from the [Async Download Queue](#async-download-queue):** that queue fetches a single URL with yt-dlp and copies the bytes into storage. Torrents are handled by qBittorrent out of process, so progress is read back from it, non-media files are never downloaded at all, and the imported media is *hardlinked* rather than copied.
+
+**Rules that apply to every endpoint here:**
+- **Only `.mp3` and `.mp4` are downloaded.** Every other file in the torrent is set to "do not download" *before* the torrent is started, so those bytes never touch the disk. A torrent containing no `.mp3`/`.mp4` is deleted with its data and the request is refused.
+- **Imported files are hardlinked** into Lexicon storage (`wsl.exe -d Ubuntu -- ln`), so one copy of the bytes has two paths: qBittorrent keeps seeding it while Lexicon streams it.
+- **Deleting in Lexicon deletes in qBittorrent.** Deleting an imported media file removes its hardlink and its `torrent_files` row; when the *last* file of a torrent is deleted, the torrent and its data are removed from qBittorrent. This happens inside the normal `DELETE /api/media/{id}` path — no separate call.
+- **The server never launches qBittorrent.** If qBittorrent is not running, or is not bound to the live VPN tunnel address, submissions are refused with a message intended to be shown to the user. This is deliberate: Proton runs in split-tunnel mode with no kill switch, so an unbound qBittorrent would download over the real IP.
+- **Limits:** `TORRENT_MAX_ACTIVE_PER_USER` active torrents per user (default 3), a `TORRENT_MIN_FREE_GB` free-space floor (default 20 GB), and a 1 MB cap on uploaded `.torrent` files.
+- **Authentication:** `/api/**` requires `ROLE_USER`, and `IdentityGuard` pins the `userId` parameter to the signed-in session, so one user cannot queue or cancel as another. `/api/torrents/active/{userId}` is registered as a guarded private read.
+
+### GET /api/torrents/status
+Whether a torrent can be queued right now. Clients call this before showing the form, so they can explain themselves before the user picks a file rather than after.
+
+**Response (200):**
+```json
+{
+  "ready": true,
+  "qbittorrentUp": true,
+  "boundToTunnel": true,
+  "message": ""
+}
+```
+
+**When it is not ready,** `message` is user-facing text explaining what to fix:
+
+| Situation | `message` |
+|---|---|
+| Server has no qBittorrent credentials | `qBittorrent is not configured on the server.` |
+| qBittorrent not running | `qBittorrent isn't running. Start it at the desktop, after Proton VPN is connected.` |
+| Proton VPN not connected | `Proton VPN isn't connected, so downloading would expose this machine's real IP.` |
+| Bound to the wrong interface | `qBittorrent is bound to 192.168.1.4 but the VPN tunnel is 10.2.0.2. Restart qBittorrent so it binds to the tunnel.` |
+
+`ready` is `qbittorrentUp && boundToTunnel`; it is the only field a client needs to decide whether to enable the submit button.
+
+---
+
+### POST /api/torrents
+Queue a torrent. Accepts either `multipart/form-data` (with a `.torrent` upload) or `application/x-www-form-urlencoded` (with a magnet / URL).
+
+**Request Parameters:**
+- `file` (file, optional): the `.torrent` file — max 1 MB, must actually be a bencoded torrent
+- `url` (string, optional): a `magnet:?xt=urn:btih:...` link or an `http(s)` link to a `.torrent`. Ignored when `file` is given.
+- `userId` (integer): User ID — pinned to the session by `IdentityGuard`
+- `title` (string, optional): display name; defaults to the torrent's own name
+- `description` (string, optional): Description
+- `isPublic` (boolean, default: false): whether the imported media is public
+
+One of `file` or `url` is required.
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "infoHash": "2b4f0c1d...40 hex chars",
+  "name": "Public Domain Music Collection",
+  "status": "DOWNLOADING"
+}
+```
+
+**Response (400):** everything the user can act on, in `error`:
+```json
+{
+  "success": false,
+  "error": "That torrent has no .mp3 or .mp4 files."
+}
+```
+
+Other `400` messages: `That .torrent file is too large to be real.`, `That does not look like a .torrent file.`, `Give a .torrent file, a magnet link, or a link to a .torrent.`, `Only magnet links and http(s) links to a .torrent are accepted.`, `You already have 3 torrents downloading. Wait for one to finish.`, a free-space refusal, or any of the `/status` messages above when qBittorrent is unusable.
+
+**Notes:**
+- `http(s)` URLs are checked by `UrlSafety.requirePublicHttpUrl` (no loopback, no private ranges). Magnet links bypass that check by design — they are not HTTP.
+- The torrent is added **stopped**, correlated by a unique `lexi-<uuid>` tag (qBittorrent's `torrents/add` returns only `Ok.`, never the hash), then its files are chosen and it is started.
+- For a magnet, metadata may not have arrived yet; the torrent stays stopped and the reconciler picks its files as soon as it does, giving up after 10 minutes.
+- Returns as soon as the torrent is downloading. Importing into Lexicon happens later, in the reconciler.
+
+**Errors:**
+- `400 Bad Request`: anything in the table above
+- `500 Internal Server Error`: `Could not queue that torrent.`
+
+---
+
+### GET /api/torrents/active/{userId}
+This user's torrents, newest first, with live progress read from qBittorrent.
+
+**Path Parameters:**
+- `userId` (integer): User ID
+
+**Query Parameters:**
+- `limit` (integer, default: 20, clamped to 1-100)
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "torrents": [
+    {
+      "infoHash": "2b4f0c1d...",
+      "name": "Public Domain Music Collection",
+      "status": "DOWNLOADING",
+      "error": null,
+      "addedAt": "2026-11-17T06:52:13",
+      "percent": 42,
+      "downloadSpeed": 1835008,
+      "eta": 180,
+      "stalled": false,
+      "mediaFileIds": []
+    },
+    {
+      "infoHash": "9ac3e0b7...",
+      "name": "Field Recordings",
+      "status": "COMPLETED",
+      "error": null,
+      "addedAt": "2026-11-17T06:10:02",
+      "percent": 100,
+      "downloadSpeed": 0,
+      "eta": 0,
+      "stalled": false,
+      "mediaFileIds": [1841, 1842]
+    }
+  ]
+}
+```
+
+**Field notes:**
+- `downloadSpeed` is bytes/second, `eta` is seconds (both `0` once qBittorrent no longer reports the torrent).
+- `stalled` means connected to no peers — on this machine that usually means Proton reconnected and qBittorrent is no longer bound to the tunnel.
+- `mediaFileIds` are the Lexicon media IDs imported from this torrent, and are what link it to `GET /api/media/{id}`.
+- Rows survive a server restart (they live in `torrent_downloads`); live progress does not, and reappears within one reconcile tick (5 s).
+
+**Status Values:**
+- `PREPARING`: added, waiting for metadata or for its files to be chosen
+- `DOWNLOADING`: in progress
+- `IMPORTING`: complete, being hardlinked into Lexicon
+- `COMPLETED`: in the library — see `mediaFileIds`
+- `FAILED`: see `error`
+- `CANCELLED`: removed by the user
+
+---
+
+### DELETE /api/torrents/{infoHash}?userId={userId}
+Cancel a download, or remove a finished torrent. **Its data in qBittorrent is deleted too.** Already-imported Lexicon media is left alone — delete that through `DELETE /api/media/{id}`.
+
+**Path Parameters:**
+- `infoHash` (string): the torrent's info hash, from the submit or list response
+
+**Query Parameters:**
+- `userId` (integer): User ID — must be the user who submitted it
+
+**Response (200):**
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+- `403 Forbidden`: `That torrent is not yours, or it is already gone.`
+
+---
+
+### Server configuration
+
+Set in the gitignored root `.env` (key names mirrored with empty values in `.env.example`) and read through `application.properties`:
+
+| Variable | Property | Default | Meaning |
+|---|---|---|---|
+| `QBITTORRENT_URL` | `qbittorrent.url` | `http://127.0.0.1:8083` | WebUI base URL — loopback only, never exposed through nginx or the tunnel |
+| `QBITTORRENT_USERNAME` | `qbittorrent.username` | — | WebUI user |
+| `QBITTORRENT_PASSWORD` | `qbittorrent.password` | — | WebUI password |
+| `TORRENT_SAVE_ROOT` | `torrent.save-root` | `<storage>/torrents/complete` | where qBittorrent is told to save, per torrent |
+| `TORRENT_MAX_ACTIVE_PER_USER` | `torrent.max-active-per-user` | `3` | per-user active cap |
+| `TORRENT_MIN_FREE_GB` | `torrent.min-free-gb` | `20` | refuse submissions below this much free space |
+| — | `vpn.interface-name` | `ProtonVPN` | adapter whose live IPv4 must match qBittorrent's bound address |
+
+With `qbittorrent.url` unset the whole feature fails closed: `/status` reports `qBittorrent is not configured on the server.` and nothing can be queued.
+
+**Tables:** `torrent_downloads` (one row per torrent: info hash, tag, source, display name, submitter, status, error, timestamps) and `torrent_files` (one row per imported file: info hash, file index, media file ID, link path). Both are created on startup by `HSQLTorrentDatabase`. Neither has a foreign key to `media_files`, matching `live_stream_queue`.
 
 ---
 
