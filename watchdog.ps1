@@ -65,7 +65,35 @@ function Mount-LexiconStorageDisks {
 }
 
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
-Write-Log "Watchdog started. Checking every ${checkInterval}s."
+
+# ----- Only ever one watchdog -----
+# Two watchdogs means two concurrent restart-all runs: one stops a service while the other
+# starts it, and whichever finishes last decides the outcome. That is how the Cloudflare
+# tunnel ended up Stopped on 2026-11-19 while every log line said the restart had succeeded,
+# and how a deploy running over that tunnel got cut off at an arbitrary point.
+#
+# They accumulated because a triggered restart hands off to restart-all *in-process*:
+# restart-all kills every OTHER watchdog, never its own caller, then starts a fresh one, so
+# each trigger left one more behind. This mutex stops copies from coexisting; exiting after
+# the handoff (below) stops them from being created at all.
+$watchdogMutex = New-Object System.Threading.Mutex($false, 'Global\LexiconWatchdog')
+$haveLock = $false
+try {
+    $haveLock = $watchdogMutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+    # The previous watchdog was force-killed rather than exiting - which is the normal path,
+    # since restart-all stops the old one before starting this replacement. An abandoned
+    # mutex is handed to the next waiter, so this means acquired, not failed. Without this
+    # catch the exception would end the script and leave nothing watching at all.
+    $haveLock = $true
+}
+if (-not $haveLock) {
+    Write-Log "Another watchdog is already running - exiting (PID $PID)."
+    exit 0
+}
+Write-Log "Watchdog started. Checking every ${checkInterval}s. (PID $PID)"
+
+try {
 
 while ($true) {
     Start-Sleep -Seconds $checkInterval
@@ -187,7 +215,46 @@ while ($true) {
         } catch {
             Write-Log "ERROR running restart-all.ps1: $_"
         }
-        # Wait extra time after restart before next check
-        Start-Sleep -Seconds 60
+        # Exactly one watchdog must come out of this, and the lock is what decides which.
+        #
+        # restart-all starts a fresh watchdog as its last step, so simply carrying on here is
+        # what produced a second one on every trigger. Simply exiting is wrong too: the
+        # replacement starts while this process still holds the lock, so it would exit on
+        # startup and leave nothing watching at all.
+        #
+        # So: drop the lock, give the replacement a moment to claim it, then try to reclaim
+        # it. Whoever ends up holding it is the watchdog. If the replacement took it, this
+        # process stands down; if it never started - script missing, Start-Process failed -
+        # this one reclaims the lock and stays on duty instead of leaving the machine blind.
+        try { $watchdogMutex.ReleaseMutex() } catch {}
+        $watchdogMutex.Dispose()
+        $watchdogMutex = $null
+        Start-Sleep -Seconds 15
+
+        $reclaim = New-Object System.Threading.Mutex($false, 'Global\LexiconWatchdog')
+        $reclaimed = $false
+        try {
+            $reclaimed = $reclaim.WaitOne(0)
+        } catch [System.Threading.AbandonedMutexException] {
+            $reclaimed = $true
+        }
+        if ($reclaimed) {
+            Write-Log "No replacement watchdog took over; staying on duty (PID $PID)."
+            $watchdogMutex = $reclaim
+            Start-Sleep -Seconds 60
+        } else {
+            $reclaim.Dispose()
+            Write-Log "Replacement watchdog has taken over; exiting (PID $PID)."
+            exit 0
+        }
+    }
+}
+
+} finally {
+    # Reached on Ctrl-C or an unhandled error. A crashed watchdog must not leave the mutex
+    # held, or restart-all's replacement would exit at once and nothing would be watching.
+    if ($watchdogMutex) {
+        try { $watchdogMutex.ReleaseMutex() } catch {}
+        $watchdogMutex.Dispose()
     }
 }
