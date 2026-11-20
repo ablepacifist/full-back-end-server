@@ -20,6 +20,16 @@ function Test-Port($port) {
     return [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
 }
 
+# For ports WSL forwards to Windows (MySQL and the Mumble server): a connection test, since they may not
+# show up in Get-NetTCPConnection.
+function Test-TcpPort([int]$port) {
+    $c = New-Object System.Net.Sockets.TcpClient
+    try {
+        $ar = $c.BeginConnect("127.0.0.1", $port, $null, $null)
+        return ($ar.AsyncWaitHandle.WaitOne(500) -and $c.Connected)
+    } catch { return $false } finally { $c.Close() }
+}
+
 # Auto-detects the ext4 media drive by GPT partition type GUID instead of a
 # fixed PHYSICALDRIVE/partition number, so this survives Windows re-enumerating
 # disks after the machine is physically moved/reseated (same approach as
@@ -55,7 +65,35 @@ function Mount-LexiconStorageDisks {
 }
 
 New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
-Write-Log "Watchdog started. Checking every ${checkInterval}s."
+
+# ----- Only ever one watchdog -----
+# Two watchdogs means two concurrent restart-all runs: one stops a service while the other
+# starts it, and whichever finishes last decides the outcome. That is how the Cloudflare
+# tunnel ended up Stopped on 2026-11-19 while every log line said the restart had succeeded,
+# and how a deploy running over that tunnel got cut off at an arbitrary point.
+#
+# They accumulated because a triggered restart hands off to restart-all *in-process*:
+# restart-all kills every OTHER watchdog, never its own caller, then starts a fresh one, so
+# each trigger left one more behind. This mutex stops copies from coexisting; exiting after
+# the handoff (below) stops them from being created at all.
+$watchdogMutex = New-Object System.Threading.Mutex($false, 'Global\LexiconWatchdog')
+$haveLock = $false
+try {
+    $haveLock = $watchdogMutex.WaitOne(0)
+} catch [System.Threading.AbandonedMutexException] {
+    # The previous watchdog was force-killed rather than exiting - which is the normal path,
+    # since restart-all stops the old one before starting this replacement. An abandoned
+    # mutex is handed to the next waiter, so this means acquired, not failed. Without this
+    # catch the exception would end the script and leave nothing watching at all.
+    $haveLock = $true
+}
+if (-not $haveLock) {
+    Write-Log "Another watchdog is already running - exiting (PID $PID)."
+    exit 0
+}
+Write-Log "Watchdog started. Checking every ${checkInterval}s. (PID $PID)"
+
+try {
 
 while ($true) {
     Start-Sleep -Seconds $checkInterval
@@ -145,21 +183,27 @@ while ($true) {
         }
     }
 
-    # Check PlayIt tunnel (redundancy only)
-    $playitProc = Get-Process -Name "playit" -ErrorAction SilentlyContinue
-    if (-not $playitProc) {
-        Write-Log "ALERT: PlayIt not running - restarting"
-        $playit = "C:\Program Files\playit_gg\bin\playit.exe"
-        if (Test-Path $playit) {
-            # "start" runs headless; the bare exe launches an interactive TUI that
-            # fills the redirected log with ANSI escape codes (see restart-all.ps1).
-            $playitLog = Join-Path $logsDir "playit.log"
-            Start-Process -FilePath $playit -ArgumentList "start" `
-                -RedirectStandardOutput $playitLog `
-                -RedirectStandardError (Join-Path $logsDir "playit-err.log") `
-                -WindowStyle Hidden -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 3
-            Write-Log "PlayIt restarted"
+    # Check the voice bridge (only once BRIDGE_ENABLED=true). Restarted on its own for the same reason as Lexi:
+    # a dead voice bridge must not take the website and media server down with a full restart. It is only started
+    # while its MySQL and Mumble server (in WSL) answer, otherwise it would crash-loop.
+    if ($cfg.BRIDGE_ENABLED -eq "true") {
+        $bridgeDir = Join-Path $BASE_DIR "myMumble\mumble-bridge"
+        if ((Test-Path (Join-Path $bridgeDir "src\index.js")) -and -not (Test-Port ([int]$cfg.BRIDGE_PORT))) {
+            if ((Test-TcpPort ([int]$cfg.MYSQL_PORT)) -and (Test-TcpPort ([int]$cfg.MUMBLE_PORT))) {
+                Write-Log "ALERT: voice bridge not listening on port $($cfg.BRIDGE_PORT) - restarting it"
+                $bridgeLog = Join-Path $logsDir "bridge.log"
+                Start-Process -FilePath "cmd.exe" `
+                    -ArgumentList "/c `"cd /d $bridgeDir && node src\index.js >> `"$bridgeLog`" 2>&1`"" `
+                    -WindowStyle Hidden -ErrorAction SilentlyContinue
+                Start-Sleep -Seconds 10
+                if (Test-Port ([int]$cfg.BRIDGE_PORT)) {
+                    Write-Log "Voice bridge restarted"
+                } else {
+                    Write-Log "WARNING: voice bridge still not listening after restart attempt (see logsridge.log)"
+                }
+            } else {
+                Write-Log "WARNING: voice bridge is down and MySQL or the Mumble server in WSL is not answering - not starting it"
+            }
         }
     }
 
@@ -171,7 +215,46 @@ while ($true) {
         } catch {
             Write-Log "ERROR running restart-all.ps1: $_"
         }
-        # Wait extra time after restart before next check
-        Start-Sleep -Seconds 60
+        # Exactly one watchdog must come out of this, and the lock is what decides which.
+        #
+        # restart-all starts a fresh watchdog as its last step, so simply carrying on here is
+        # what produced a second one on every trigger. Simply exiting is wrong too: the
+        # replacement starts while this process still holds the lock, so it would exit on
+        # startup and leave nothing watching at all.
+        #
+        # So: drop the lock, give the replacement a moment to claim it, then try to reclaim
+        # it. Whoever ends up holding it is the watchdog. If the replacement took it, this
+        # process stands down; if it never started - script missing, Start-Process failed -
+        # this one reclaims the lock and stays on duty instead of leaving the machine blind.
+        try { $watchdogMutex.ReleaseMutex() } catch {}
+        $watchdogMutex.Dispose()
+        $watchdogMutex = $null
+        Start-Sleep -Seconds 15
+
+        $reclaim = New-Object System.Threading.Mutex($false, 'Global\LexiconWatchdog')
+        $reclaimed = $false
+        try {
+            $reclaimed = $reclaim.WaitOne(0)
+        } catch [System.Threading.AbandonedMutexException] {
+            $reclaimed = $true
+        }
+        if ($reclaimed) {
+            Write-Log "No replacement watchdog took over; staying on duty (PID $PID)."
+            $watchdogMutex = $reclaim
+            Start-Sleep -Seconds 60
+        } else {
+            $reclaim.Dispose()
+            Write-Log "Replacement watchdog has taken over; exiting (PID $PID)."
+            exit 0
+        }
+    }
+}
+
+} finally {
+    # Reached on Ctrl-C or an unhandled error. A crashed watchdog must not leave the mutex
+    # held, or restart-all's replacement would exit at once and nothing would be watching.
+    if ($watchdogMutex) {
+        try { $watchdogMutex.ReleaseMutex() } catch {}
+        $watchdogMutex.Dispose()
     }
 }
