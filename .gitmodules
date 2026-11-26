@@ -26,3 +26,7 @@
 	path = myMumble
 	url = https://github.com/ablepacifist/myMumble.git
 	branch = dev
+[submodule "LexiconAndroid"]
+	path = LexiconAndroid
+	url = git@github.com:ablepacifist/Lexicon-Android.git
+	branch = main
